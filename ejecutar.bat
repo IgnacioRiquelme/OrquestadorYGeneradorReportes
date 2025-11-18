@@ -1,0 +1,3 @@
+@echo off
+cd /d "%~dp0"
+javaw --module-path "%USERPROFILE%\.m2\repository\org\openjfx\javafx-controls\21.0.2\javafx-controls-21.0.2-win.jar;%USERPROFILE%\.m2\repository\org\openjfx\javafx-graphics\21.0.2\javafx-graphics-21.0.2-win.jar;%USERPROFILE%\.m2\repository\org\openjfx\javafx-base\21.0.2\javafx-base-21.0.2-win.jar;%USERPROFILE%\.m2\repository\org\openjfx\javafx-fxml\21.0.2\javafx-fxml-21.0.2-win.jar" --add-modules javafx.controls,javafx.fxml -cp "target\classes;%USERPROFILE%\.m2\repository\com\google\code\gson\gson\2.10.1\gson-2.10.1.jar;%USERPROFILE%\.m2\repository\commons-io\commons-io\2.8.0\commons-io-2.8.0.jar" com.orquestador.app.Main

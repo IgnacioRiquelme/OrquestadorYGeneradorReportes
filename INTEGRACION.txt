@@ -1,0 +1,70 @@
+﻿// Este metodo va al final de ControladorPrincipal.java, antes del ultimo }
+
+import com.orquestador.servicio.GeneradorDocumentos;
+import com.orquestador.modelo.Proyecto;
+import java.io.File;
+
+// En declarations (linea ~30):
+private Button btnGenerarInformes;
+
+// En initialize(), despues de btnVerCapturas:
+btnGenerarInformes = new Button(" Generar Informes");
+btnGenerarInformes.setStyle("-fx-background-color: #FF9800; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
+btnGenerarInformes.setOnAction(e -> generarInformes());
+botonesEjecucion.getChildren().add(btnGenerarInformes);
+
+// Metodo completo al final:
+private void generarInformes() {
+    List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+        .filter(ProyectoAutomatizacion::isSeleccionado)
+        .collect(java.util.stream.Collectors.toList());
+    
+    if (seleccionados.isEmpty()) {
+        mostrarAlerta("Sin seleccion", "Selecciona al menos un proyecto", Alert.AlertType.WARNING);
+        return;
+    }
+    
+    agregarLog("=== GENERACION DE INFORMES ===");
+    
+    new Thread(() -> {
+        int exitosos = 0, fallidos = 0;
+        for (ProyectoAutomatizacion proy : seleccionados) {
+            try {
+                Platform.runLater(() -> agregarLog("Generando: " + proy.getNombre()));
+                
+                Proyecto p = new Proyecto();
+                p.setNombre(proy.getNombre());
+                p.setRutaImagenes(proy.getRutaImagenes() != null ? proy.getRutaImagenes() : proy.getRuta() + "\\test-output\\capturaPantalla");
+                p.setRutaTemplateWord(proy.getRutaTemplateWord());
+                p.setRutaSalidaWord(proy.getRutaSalidaWord() != null ? proy.getRutaSalidaWord() : proy.getRuta());
+                p.setRutaSalidaPdf(proy.getRutaSalidaPdf() != null ? proy.getRutaSalidaPdf() : proy.getRuta());
+                
+                List<String> patrones = proy.getImagenesSeleccionadas();
+                if (patrones == null || patrones.isEmpty()) {
+                    patrones = new java.util.ArrayList<>();
+                    patrones.add("*.png");
+                    patrones.add("*.jpg");
+                }
+                p.setImagenesSeleccionadas(patrones);
+                
+                GeneradorDocumentos gen = new GeneradorDocumentos(p);
+                if (gen.generar()) {
+                    exitosos++;
+                    Platform.runLater(() -> agregarLog("  Exitoso: " + p.getDocumentoWordGenerado()));
+                } else {
+                    fallidos++;
+                    Platform.runLater(() -> agregarLog("  Error: " + p.getMensajeError()));
+                }
+            } catch (Exception e) {
+                fallidos++;
+                Platform.runLater(() -> agregarLog("  Error: " + e.getMessage()));
+            }
+        }
+        
+        int ex = exitosos, fa = fallidos;
+        Platform.runLater(() -> {
+            agregarLog("=== Exitosos: " + ex + " | Fallidos: " + fa + " ===");
+            mostrarAlerta("Informes", "Exitosos: " + ex + "\nFallidos: " + fa, fa == 0 ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING);
+        });
+    }).start();
+}

@@ -1,0 +1,37 @@
+[
+  {
+    "nombre": "Proyecto Ejemplo 1",
+    "ruta": "C:\\ruta\\al\\proyecto1",
+    "area": "Clientes",
+    "tipoVPN": "SIN_VPN",
+    "tipoEjecucion": "MAVEN",
+    "seleccionado": true,
+    "estado": "PENDIENTE",
+    "rutaImagenes": "C:\\ruta\\al\\proyecto1\\test-output\\capturaPantalla",
+    "rutaTemplateWord": "C:\\templates\\template_evidencias.docx",
+    "rutaSalidaWord": "C:\\salidas\\word",
+    "rutaSalidaPdf": "C:\\salidas\\pdf",
+    "imagenesSeleccionadas": [
+      "t0001_1_Login_",
+      "t0002_2_Dashboard_",
+      "t0003_3_Resultado_"
+    ]
+  },
+  {
+    "nombre": "Proyecto Ejemplo 2",
+    "ruta": "C:\\ruta\\al\\proyecto2",
+    "area": "Comercial",
+    "tipoVPN": "VPN_BCI",
+    "tipoEjecucion": "MAVEN",
+    "seleccionado": true,
+    "estado": "PENDIENTE",
+    "rutaImagenes": "C:\\ruta\\al\\proyecto2\\test-output\\capturaPantalla",
+    "rutaTemplateWord": "C:\\templates\\template_evidencias.docx",
+    "rutaSalidaWord": "C:\\salidas\\word",
+    "rutaSalidaPdf": "C:\\salidas\\pdf",
+    "imagenesSeleccionadas": [
+      "t0001_Login_",
+      "t0002_Validacion_"
+    ]
+  }
+]

@@ -1,0 +1,208 @@
+package com.orquestador.servicio;
+
+import com.orquestador.modelo.ProyectoAutomatizacion;
+import com.orquestador.modelo.ProyectoAutomatizacion.EstadoEjecucion;
+
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.util.function.Consumer;
+
+/**
+ * Servicio para ejecutar proyectos de automatizacin
+ */
+public class EjecutorAutomatizaciones {
+
+    private boolean ejecutando = false;
+    private Process procesoActual;
+
+    /**
+     * Ejecuta un proyecto de automatizacin en una ventana CMD maximizada
+     */
+    public void ejecutarProyecto(ProyectoAutomatizacion proyecto,
+                                  Consumer<String> logCallback,
+                                  Runnable onFinish) {
+
+        proyecto.setEstado(EstadoEjecucion.EJECUTANDO);
+        proyecto.setUltimaEjecucion(LocalDateTime.now());
+
+        long inicio = System.currentTimeMillis();
+
+        new Thread(() -> {
+            try {
+                // Limpiar procesos antes de ejecutar
+                limpiarProcesos(logCallback);
+
+                // Crear script temporal para ejecutar
+                File scriptTemp = crearScriptEjecucion(proyecto);
+                
+                // Crear un archivo marker para detectar cuando termina
+                File markerFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".done");
+                if (markerFile.exists()) markerFile.delete();
+
+                // Ejecutar en CMD maximizado - CAMBIO CRTICO: usar /wait para que espere
+                ProcessBuilder pb = new ProcessBuilder(
+                    "cmd.exe", "/c", "start", "\"" + proyecto.getNombre() + "\"", "/wait", "/max", 
+                    "cmd.exe", "/c", scriptTemp.getAbsolutePath() + " & echo DONE > \"" + markerFile.getAbsolutePath() + "\""
+                );
+                pb.directory(new File(proyecto.getRuta()));
+
+                logCallback.accept(" Ejecutando: " + proyecto.getNombre());
+                logCallback.accept(" Ruta: " + proyecto.getRuta());
+
+                procesoActual = pb.start();
+                
+                // Esperar a que el proceso termine
+                int exitCode = procesoActual.waitFor();
+                
+                // Esperar tambin a que aparezca el archivo marker (confirma que el script termin)
+                int maxWait = 300; // 5 minutos mximo
+                int waited = 0;
+                while (!markerFile.exists() && waited < maxWait) {
+                    Thread.sleep(1000);
+                    waited++;
+                }
+
+                // Leer el exit code del script si existe
+                File exitCodeFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".exitcode");
+                if (exitCodeFile.exists()) {
+                    String content = new String(java.nio.file.Files.readAllBytes(exitCodeFile.toPath())).trim();
+                    try {
+                        exitCode = Integer.parseInt(content);
+                    } catch (NumberFormatException e) {
+                        // Usar el exit code del proceso
+                    }
+                    exitCodeFile.delete();
+                }
+
+                // Calcular duracin
+                long fin = System.currentTimeMillis();
+                int duracion = (int) ((fin - inicio) / 1000);
+                proyecto.setDuracionSegundos(duracion);
+
+                // Actualizar estado segn resultado
+                if (exitCode == 0) {
+                    proyecto.setEstado(EstadoEjecucion.EXITOSO);
+                    logCallback.accept(" " + proyecto.getNombre() + " - EXITOSO (" + duracion + "s)");
+                } else {
+                    proyecto.setEstado(EstadoEjecucion.FALLIDO);
+                    proyecto.setMensajeError("Exit code: " + exitCode);
+                    logCallback.accept(" " + proyecto.getNombre() + " - FALLIDO (" + duracion + "s)");
+                }
+
+                // Limpiar despus de ejecutar
+                scriptTemp.delete();
+                markerFile.delete();
+                limpiarProcesos(logCallback);
+
+            } catch (InterruptedException e) {
+                proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                logCallback.accept(" " + proyecto.getNombre() + " - CANCELADO");
+            } catch (Exception e) {
+                proyecto.setEstado(EstadoEjecucion.FALLIDO);
+                proyecto.setMensajeError(e.getMessage());
+                logCallback.accept(" Error: " + e.getMessage());
+            } finally {
+                procesoActual = null;
+                if (onFinish != null) {
+                    onFinish.run();
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * Crea un script .bat temporal para la ejecucin
+     */
+    private File crearScriptEjecucion(ProyectoAutomatizacion proyecto) throws IOException {
+        File scriptTemp = File.createTempFile("exec_", ".bat");
+        File exitCodeFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".exitcode");
+
+        StringBuilder script = new StringBuilder();
+        script.append("@echo off\n");
+        script.append("chcp 65001 >nul\n");
+        script.append("cd /d \"").append(proyecto.getRuta()).append("\"\n");
+        script.append("echo.\n");
+        script.append("echo ========================================\n");
+        script.append("echo   ").append(proyecto.getNombre()).append("\n");
+        script.append("echo   Area: ").append(proyecto.getArea()).append("\n");
+        script.append("echo   VPN: ").append(proyecto.getTipoVPN().getDescripcion()).append("\n");
+        script.append("echo ========================================\n");
+        script.append("echo.\n");
+
+        // Comando segn tipo de ejecucin
+        if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN) {
+            script.append("echo Ejecutando mvn test...\n");
+            script.append("echo.\n");
+            script.append("call mvn test\n");
+        } else if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN) {
+            script.append("echo Ejecutando newman...\n");
+            script.append("echo.\n");
+            script.append("call newman run collection.json\n");
+        } else {
+            script.append("echo Ejecutando mvn test + newman...\n");
+            script.append("echo.\n");
+            script.append("call mvn test\n");
+            script.append("echo.\n");
+            script.append("echo Ejecutando newman...\n");
+            script.append("call newman run collection.json\n");
+        }
+        
+        script.append("set TEST_RESULT=%ERRORLEVEL%\n");
+        script.append("echo.\n");
+        script.append("echo ========================================\n");
+        script.append("if %TEST_RESULT% EQU 0 (\n");
+        script.append("    echo   RESULTADO: EXITOSO\n");
+        script.append(") else (\n");
+        script.append("    echo   RESULTADO: FALLIDO\n");
+        script.append("    echo   Exit Code: %TEST_RESULT%\n");
+        script.append(")\n");
+        script.append("echo ========================================\n");
+        script.append("echo.\n");
+        script.append("echo %TEST_RESULT% > \"").append(exitCodeFile.getAbsolutePath()).append("\"\n");
+        script.append("timeout /t 3 >nul\n");
+        script.append("exit /b %TEST_RESULT%\n");
+
+        java.nio.file.Files.write(scriptTemp.toPath(), script.toString().getBytes("UTF-8"));
+        return scriptTemp;
+    }
+
+    /**
+     * Limpia procesos de CMD y Chrome antes/despus de la ejecucin
+     */
+    private void limpiarProcesos(Consumer<String> logCallback) {
+        try {
+            // Cerrar Chrome
+            ProcessBuilder pbChrome = new ProcessBuilder("taskkill", "/F", "/IM", "chrome.exe", "/T");
+            pbChrome.start().waitFor();
+
+            // Cerrar ChromeDriver
+            ProcessBuilder pbDriver = new ProcessBuilder("taskkill", "/F", "/IM", "chromedriver.exe", "/T");
+            pbDriver.start().waitFor();
+
+            logCallback.accept(" Procesos limpiados");
+            Thread.sleep(1000); // Esperar un segundo
+
+        } catch (Exception e) {
+            // No es crtico si falla
+            logCallback.accept(" Advertencia al limpiar procesos: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Detiene la ejecucin actual
+     */
+    public void detener() {
+        if (procesoActual != null && procesoActual.isAlive()) {
+            procesoActual.destroy();
+        }
+    }
+
+    public boolean isEjecutando() {
+        return ejecutando;
+    }
+
+    public void setEjecutando(boolean ejecutando) {
+        this.ejecutando = ejecutando;
+    }
+}
