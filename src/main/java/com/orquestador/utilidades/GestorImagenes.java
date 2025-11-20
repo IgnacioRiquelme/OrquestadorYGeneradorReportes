@@ -25,7 +25,10 @@ public class GestorImagenes {
             return new ArrayList<>();
         }
         
-        File[] archivos = dir.listFiles((d, name) -> name.toLowerCase().endsWith(".png"));
+        File[] archivos = dir.listFiles((d, name) -> {
+            String lower = name.toLowerCase();
+            return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+        });
         
         if (archivos == null || archivos.length == 0) {
             return new ArrayList<>();
@@ -46,14 +49,31 @@ public class GestorImagenes {
     /**
      * Extrae el patrón de una imagen (todo antes de la fecha/hora)
      * Ejemplo: "t0001_1_Login_20251111_235030.png" → "t0001_1_Login_"
+     * Ejemplo: "17_detalle_ticket_20251119_112744.jpg" → "17_detalle_ticket_"
+     * Ejemplo: "t0000_9_Numero_Atencion_18231996_Auditoria_20251119_102030.png" → "t0000_9_Numero_Atencion_"
      */
     public static String extraerPatron(String nombreArchivo) {
-        // Patrón: cualquier cosa antes de _YYYYMMDD_HHMMSS.png
-        Pattern pattern = Pattern.compile("^(.+?)_(\\d{8}_\\d{6})\\.png$");
+        // Patrón: cualquier cosa antes de _YYYYMMDD_HHMMSS.(png|jpg|jpeg)
+        Pattern pattern = Pattern.compile("^(.+?)_(\\d{8}_\\d{6})\\.(png|jpg|jpeg)$", Pattern.CASE_INSENSITIVE);
         Matcher matcher = pattern.matcher(nombreArchivo);
         
         if (matcher.matches()) {
-            return matcher.group(1) + "_";
+            String patronCompleto = matcher.group(1) + "_";
+            
+            // Eliminar cualquier número largo (6+ dígitos) que NO sea timestamp
+            // seguido de texto adicional antes del timestamp real
+            // Ejemplo: "t0000_9_Numero_Atencion_18231996_Auditoria_" → "t0000_9_Numero_Atencion_"
+            // Buscamos: _[números de 6+ dígitos]_ seguido de más texto
+            Pattern numeroLargo = Pattern.compile("_(\\d{6,})_.*$");
+            Matcher matcherNumero = numeroLargo.matcher(patronCompleto);
+            
+            if (matcherNumero.find()) {
+                // Encontramos un número largo, cortamos justo antes de él
+                int indiceCorte = matcherNumero.start();
+                patronCompleto = patronCompleto.substring(0, indiceCorte + 1); // +1 para incluir el guión bajo
+            }
+            
+            return patronCompleto;
         }
         
         return null;
@@ -84,8 +104,15 @@ public class GestorImagenes {
             return null;
         }
         
-        File[] archivos = dir.listFiles((d, name) -> 
-            name.toLowerCase().endsWith(".png") && name.contains(patron));
+        // Filtrar archivos cuyo patrón extraído coincida con el patrón buscado
+        File[] archivos = dir.listFiles((d, name) -> {
+            String lower = name.toLowerCase();
+            if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg")) {
+                return false;
+            }
+            String patronArchivo = extraerPatron(name);
+            return patronArchivo != null && patronArchivo.equals(patron);
+        });
         
         if (archivos == null || archivos.length == 0) {
             return null;
@@ -106,8 +133,15 @@ public class GestorImagenes {
             return new ArrayList<>();
         }
         
-        File[] archivos = dir.listFiles((d, name) -> 
-            name.toLowerCase().endsWith(".png") && name.contains(patron));
+        // Filtrar archivos cuyo patrón extraído coincida con el patrón buscado
+        File[] archivos = dir.listFiles((d, name) -> {
+            String lower = name.toLowerCase();
+            if (!lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg")) {
+                return false;
+            }
+            String patronArchivo = extraerPatron(name);
+            return patronArchivo != null && patronArchivo.equals(patron);
+        });
         
         if (archivos == null || archivos.length == 0) {
             return new ArrayList<>();

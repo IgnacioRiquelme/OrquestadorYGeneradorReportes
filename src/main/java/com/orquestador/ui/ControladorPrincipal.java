@@ -137,9 +137,10 @@ public class ControladorPrincipal {
         btnGenerarInformes.setStyle("-fx-background-color: #FF6F00; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
         btnGenerarInformes.setOnAction(e -> generarInformes());
         
-        btnLimpiarImagenes = new Button("🗑 Limpiar Imagenes");
+        btnLimpiarImagenes = new Button("🗑 Limpiar Configuración");
         btnLimpiarImagenes.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
-        btnLimpiarImagenes.setOnAction(e -> limpiarImagenesSeleccionadas());
+        btnLimpiarImagenes.setOnAction(e -> limpiarConfiguracionImagenes());
+        btnLimpiarImagenes.setTooltip(new javafx.scene.control.Tooltip("Limpia las imágenes guardadas de los proyectos seleccionados (no elimina archivos físicos)"));
         
         botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnLimpiarImagenes);
         
@@ -274,7 +275,35 @@ public class ControladorPrincipal {
         });
         colReporte.setMinWidth(100);
         
-        tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte);
+        // Columna Configurar (solo para proyectos especiales con credenciales)
+        TableColumn<ProyectoAutomatizacion, Void> colConfigurar = new TableColumn<>("Configurar");
+        colConfigurar.setCellFactory(param -> new javafx.scene.control.TableCell<ProyectoAutomatizacion, Void>() {
+            private final Button btnConfigurar = new Button("⚙️ Config");
+            {
+                btnConfigurar.setStyle("-fx-background-color: #FF9800; -fx-text-fill: white; -fx-font-weight: bold;");
+                btnConfigurar.setOnAction(event -> {
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    abrirDialogoCredenciales(proyecto);
+                });
+            }
+            @Override
+            protected void updateItem(Void item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || getTableView().getItems().get(getIndex()) == null) {
+                    setGraphic(null);
+                } else {
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
+                        setGraphic(btnConfigurar);
+                    } else {
+                        setGraphic(null);
+                    }
+                }
+            }
+        });
+        colConfigurar.setMinWidth(100);
+        
+        tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colConfigurar);
         
         container.getChildren().addAll(lblTabla, tablaProyectos);
         VBox.setVgrow(tablaProyectos, Priority.ALWAYS);
@@ -972,6 +1001,275 @@ public class ControladorPrincipal {
         return null;
     }
 
+    // Diálogo modal para configurar credenciales de proyectos especiales
+    private void abrirDialogoCredenciales(ProyectoAutomatizacion proyecto) {
+        try {
+            // Cargar credenciales actuales
+            com.orquestador.modelo.Credenciales cred = com.orquestador.util.GestorCredenciales.cargarCredenciales(proyecto);
+            
+            Dialog<com.orquestador.modelo.Credenciales> dialog = new Dialog<>();
+            dialog.setTitle("Configurar Credenciales - " + proyecto.getNombre());
+            dialog.setHeaderText("Actualizar datos y imágenes para: " + proyecto.getNombre());
+            
+            ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
+            dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+            
+            VBox contenido = new VBox(15);
+            contenido.setPadding(new Insets(20));
+            contenido.setMinWidth(700);
+            contenido.setPrefWidth(750);
+            
+            String nombre = proyecto.getNombre().toLowerCase();
+            
+            // SECCIÓN 1: CREDENCIALES (campos de texto)
+            Label lblCredenciales = new Label("📝 Credenciales");
+            lblCredenciales.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+            contenido.getChildren().add(lblCredenciales);
+            
+            // Usar contenedor para referencias mutables
+            java.util.Map<String, javafx.scene.control.Control> campos = new java.util.HashMap<>();
+            
+            VBox vboxCred = new VBox(10);
+            vboxCred.setPadding(new Insets(10));
+            vboxCred.setStyle("-fx-border-color: #cccccc; -fx-border-radius: 5;");
+            
+            if (nombre.contains("zenit")) {
+                // Proyecto 16: user, pasword, nAtencionZenit
+                vboxCred.getChildren().add(new Label("Usuario:"));
+                TextField txtUser = new TextField(cred.getUser());
+                campos.put("user", txtUser);
+                vboxCred.getChildren().add(txtUser);
+                
+                vboxCred.getChildren().add(new Label("Contraseña:"));
+                PasswordField txtPassword = new PasswordField();
+                txtPassword.setText(cred.getPasword());
+                campos.put("password", txtPassword);
+                vboxCred.getChildren().add(txtPassword);
+                
+                vboxCred.getChildren().add(new Label("Número Solicitud (Zenit):"));
+                TextField txtNAtencion = new TextField(cred.getNAtencionZenit());
+                campos.put("natencion", txtNAtencion);
+                vboxCred.getChildren().add(txtNAtencion);
+                
+            } else if (nombre.contains("vida")) {
+                // Proyecto 18: numeroTicket
+                vboxCred.getChildren().add(new Label("Número Ticket:"));
+                TextField txtNumeroTicket = new TextField(cred.getNumeroTicket());
+                campos.put("numeroticket", txtNumeroTicket);
+                vboxCred.getChildren().add(txtNumeroTicket);
+                
+            } else if (nombre.contains("corredores") && !nombre.contains("vida")) {
+                // Proyecto 17: user2, pasword2
+                vboxCred.getChildren().add(new Label("Usuario:"));
+                TextField txtUser2 = new TextField(cred.getUser2());
+                campos.put("user2", txtUser2);
+                vboxCred.getChildren().add(txtUser2);
+                
+                vboxCred.getChildren().add(new Label("Contraseña:"));
+                PasswordField txtPassword2 = new PasswordField();
+                txtPassword2.setText(cred.getPasword2());
+                campos.put("password2", txtPassword2);
+                vboxCred.getChildren().add(txtPassword2);
+                
+            } else {
+                // Proyecto 15 (BCI): user, pasword, nAtencionBci
+                vboxCred.getChildren().add(new Label("Usuario:"));
+                TextField txtUser = new TextField(cred.getUser());
+                campos.put("user", txtUser);
+                vboxCred.getChildren().add(txtUser);
+                
+                vboxCred.getChildren().add(new Label("Contraseña:"));
+                PasswordField txtPassword = new PasswordField();
+                txtPassword.setText(cred.getPasword());
+                campos.put("password", txtPassword);
+                vboxCred.getChildren().add(txtPassword);
+                
+                vboxCred.getChildren().add(new Label("Número Solicitud (BCI):"));
+                TextField txtNAtencion = new TextField(cred.getNAtencionBci());
+                campos.put("natencion", txtNAtencion);
+                vboxCred.getChildren().add(txtNAtencion);
+            }
+            
+            contenido.getChildren().add(vboxCred);
+            
+            // SECCIÓN 2: IMÁGENES
+            Label lblImagenes = new Label("🖼️ Imágenes");
+            lblImagenes.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+            contenido.getChildren().add(lblImagenes);
+            
+            VBox vboxImg = new VBox(15);
+            vboxImg.setPadding(new Insets(10));
+            vboxImg.setStyle("-fx-border-color: #cccccc; -fx-border-radius: 5;");
+            
+            // Imagen de Solicitud (solo para proyectos 15, 16, 18 - híbridos)
+            if (!nombre.contains("corredores") || nombre.contains("vida")) {
+                vboxImg.getChildren().add(new Label("📄 Imagen de la Solicitud (PRIMERA imagen del informe):"));
+                
+                TextField txtImgSolicitud = new TextField(cred.getRutaImagenSolicitud());
+                txtImgSolicitud.setPromptText("Ruta de la imagen de solicitud");
+                txtImgSolicitud.setEditable(false);
+                campos.put("imgSolicitud", txtImgSolicitud);
+                
+                Button btnExaminarSolicitud = new Button("Examinar...");
+                btnExaminarSolicitud.setOnAction(e -> {
+                    javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+                    chooser.setTitle("Seleccionar imagen de solicitud");
+                    chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Imágenes", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"));
+                    java.io.File file = chooser.showOpenDialog(dialog.getOwner());
+                    if (file != null) {
+                        txtImgSolicitud.setText(file.getAbsolutePath());
+                    }
+                });
+                
+                HBox hboxSolicitud = new HBox(10);
+                hboxSolicitud.getChildren().addAll(txtImgSolicitud, btnExaminarSolicitud);
+                HBox.setHgrow(txtImgSolicitud, Priority.ALWAYS);
+                
+                // Drag & Drop para Solicitud
+                configurarDragDropTextField(txtImgSolicitud);
+                
+                vboxImg.getChildren().add(hboxSolicitud);
+            }
+            
+            // Imagen de Correo (para los 4 proyectos)
+            vboxImg.getChildren().add(new Label("📧 Imagen del Correo (ÚLTIMA imagen del informe):"));
+            
+            TextField txtImgCorreo = new TextField(cred.getRutaImagenCorreo());
+            txtImgCorreo.setPromptText("Ruta de la imagen del correo");
+            txtImgCorreo.setEditable(false);
+            campos.put("imgCorreo", txtImgCorreo);
+            
+            Button btnExaminarCorreo = new Button("Examinar...");
+            btnExaminarCorreo.setOnAction(e -> {
+                javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+                chooser.setTitle("Seleccionar imagen del correo");
+                chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Imágenes", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"));
+                java.io.File file = chooser.showOpenDialog(dialog.getOwner());
+                if (file != null) {
+                    txtImgCorreo.setText(file.getAbsolutePath());
+                }
+            });
+            
+            HBox hboxCorreo = new HBox(10);
+            hboxCorreo.getChildren().addAll(txtImgCorreo, btnExaminarCorreo);
+            HBox.setHgrow(txtImgCorreo, Priority.ALWAYS);
+            
+            // Drag & Drop para Correo
+            configurarDragDropTextField(txtImgCorreo);
+            
+            vboxImg.getChildren().add(hboxCorreo);
+            
+            contenido.getChildren().add(vboxImg);
+            
+            javafx.scene.control.ScrollPane scrollContenido = new javafx.scene.control.ScrollPane(contenido);
+            scrollContenido.setFitToWidth(true);
+            scrollContenido.setPrefHeight(600);
+            
+            dialog.getDialogPane().setContent(scrollContenido);
+            
+            dialog.setResultConverter(dialogButton -> {
+                if (dialogButton == btnGuardar) {
+                    com.orquestador.modelo.Credenciales credActualizada = new com.orquestador.modelo.Credenciales();
+                    
+                    // Recopilar valores según el tipo de proyecto
+                    if (nombre.contains("zenit")) {
+                        if (campos.containsKey("user")) credActualizada.setUser(((TextField)campos.get("user")).getText());
+                        if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField)campos.get("password")).getText());
+                        if (campos.containsKey("natencion")) credActualizada.setNAtencionZenit(((TextField)campos.get("natencion")).getText());
+                    } else if (nombre.contains("vida")) {
+                        if (campos.containsKey("numeroticket")) credActualizada.setNumeroTicket(((TextField)campos.get("numeroticket")).getText());
+                    } else if (nombre.contains("corredores") && !nombre.contains("vida")) {
+                        if (campos.containsKey("user2")) credActualizada.setUser2(((TextField)campos.get("user2")).getText());
+                        if (campos.containsKey("password2")) credActualizada.setPasword2(((PasswordField)campos.get("password2")).getText());
+                    } else {
+                        // BCI por defecto
+                        if (campos.containsKey("user")) credActualizada.setUser(((TextField)campos.get("user")).getText());
+                        if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField)campos.get("password")).getText());
+                        if (campos.containsKey("natencion")) credActualizada.setNAtencionBci(((TextField)campos.get("natencion")).getText());
+                    }
+                    
+                    // Imágenes (comunes)
+                    if (campos.containsKey("imgSolicitud")) {
+                        credActualizada.setRutaImagenSolicitud(((TextField)campos.get("imgSolicitud")).getText());
+                    }
+                    if (campos.containsKey("imgCorreo")) {
+                        credActualizada.setRutaImagenCorreo(((TextField)campos.get("imgCorreo")).getText());
+                    }
+                    
+                    // Mostrar alerta de campos no completados (pero permitir guardar)
+                    java.util.List<String> camposVacios = new java.util.ArrayList<>();
+                    if (credActualizada.getUser().isEmpty() && !nombre.contains("vida") && !nombre.contains("corredores")) {
+                        camposVacios.add("Usuario");
+                    }
+                    if (credActualizada.getPasword().isEmpty() && !nombre.contains("vida")) {
+                        camposVacios.add("Contraseña");
+                    }
+                    if (credActualizada.getNumeroTicket().isEmpty() && nombre.contains("vida")) {
+                        camposVacios.add("Número Ticket");
+                    }
+                    if (credActualizada.getRutaImagenSolicitud().isEmpty() && (!nombre.contains("corredores") || nombre.contains("vida"))) {
+                        camposVacios.add("Imagen Solicitud");
+                    }
+                    if (credActualizada.getRutaImagenCorreo().isEmpty()) {
+                        camposVacios.add("Imagen Correo");
+                    }
+                    
+                    if (!camposVacios.isEmpty()) {
+                        String msg = "⚠️ Campos no completados:\n" + String.join(", ", camposVacios) + "\n\nPuedes continuar igual.";
+                        mostrarAlerta("Campos Incompletos", msg, Alert.AlertType.INFORMATION);
+                    }
+                    
+                    return credActualizada;
+                }
+                return null;
+            });
+            
+            Optional<com.orquestador.modelo.Credenciales> resultado = dialog.showAndWait();
+            resultado.ifPresent(credGuardar -> {
+                try {
+                    com.orquestador.util.GestorCredenciales.guardarCredenciales(proyecto, credGuardar);
+                    agregarLog("✅ Credenciales actualizadas para: " + proyecto.getNombre());
+                    mostrarAlerta("Éxito", "Credenciales guardadas correctamente", Alert.AlertType.INFORMATION);
+                } catch (Exception e) {
+                    agregarLog("❌ Error al guardar credenciales: " + e.getMessage());
+                    mostrarAlerta("Error", "No se pudieron guardar las credenciales: " + e.getMessage(), Alert.AlertType.ERROR);
+                }
+            });
+            
+        } catch (Exception e) {
+            agregarLog("❌ Error abriendo diálogo de credenciales: " + e.getMessage());
+            mostrarAlerta("Error", "Error abriendo el diálogo: " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+    
+    // Configurar drag & drop para un TextField de imagen
+    private void configurarDragDropTextField(TextField textField) {
+        textField.setOnDragOver(event -> {
+            if (event.getDragboard().hasFiles()) {
+                event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+            }
+            event.consume();
+        });
+        
+        textField.setOnDragDropped(event -> {
+            javafx.scene.input.Dragboard db = event.getDragboard();
+            boolean success = false;
+            if (db.hasFiles()) {
+                java.io.File file = db.getFiles().get(0);
+                String path = file.getAbsolutePath();
+                // Validar que sea una imagen
+                if (path.matches("(?i).*\\.(png|jpg|jpeg|bmp|gif)$")) {
+                    textField.setText(path);
+                    success = true;
+                } else {
+                    mostrarAlerta("Archivo inválido", "Por favor, selecciona una imagen válida (.png, .jpg, .jpeg, .bmp, .gif)", Alert.AlertType.WARNING);
+                }
+            }
+            event.setDropCompleted(success);
+            event.consume();
+        });
+    }
+
     private void ejecutarSeleccionados() {
         List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
@@ -1223,6 +1521,10 @@ public class ControladorPrincipal {
         // Procesar solo el proyecto seleccionado
         java.io.File carpetaCapturas = new java.io.File(seleccionado.getRuta(), "test-output/capturaPantalla");
         
+        System.out.println("[DEBUG] Ruta del proyecto: " + seleccionado.getRuta());
+        System.out.println("[DEBUG] Buscando capturas en: " + carpetaCapturas.getAbsolutePath());
+        System.out.println("[DEBUG] Carpeta existe: " + carpetaCapturas.exists());
+        
         if (!carpetaCapturas.exists()) {
             mostrarAlerta("Sin capturas", "No se encontro la carpeta de capturas en:\n" + carpetaCapturas.getAbsolutePath(), Alert.AlertType.INFORMATION);
             return;
@@ -1230,52 +1532,50 @@ public class ControladorPrincipal {
         
         java.io.File[] imagenes = carpetaCapturas.listFiles((dir, name) -> 
             name.toLowerCase().endsWith(".png") || name.toLowerCase().endsWith(".jpg"));
+        
+        System.out.println("[DEBUG] Imágenes encontradas: " + (imagenes != null ? imagenes.length : 0));
+        if (imagenes != null && imagenes.length > 0) {
+            System.out.println("[DEBUG] Primera imagen: " + imagenes[0].getName());
+        }
             
         if (imagenes == null || imagenes.length == 0) {
             mostrarAlerta("Sin capturas", "No se encontraron imagenes en la carpeta de capturas", Alert.AlertType.INFORMATION);
             return;
         }
         
-        LocalDateTime ultimaEjec = seleccionado.getUltimaEjecucion();
-        
+        // Mostrar todas las imágenes disponibles sin filtro temporal
         for (java.io.File img : imagenes) {
-            // Filtrar imagenes posteriores a la ultima ejecucion
-            long imgTime = img.lastModified();
-            long ejecTime = ultimaEjec.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
-            
-            if (imgTime >= ejecTime - 5000) { // 5 segundos de margen
-                try {
-                    javafx.scene.image.Image image = new javafx.scene.image.Image(img.toURI().toString());
-                    javafx.scene.image.ImageView iv = new javafx.scene.image.ImageView(image);
-                    iv.setFitWidth(300);
-                    iv.setPreserveRatio(true);
+            try {
+                javafx.scene.image.Image image = new javafx.scene.image.Image(img.toURI().toString());
+                javafx.scene.image.ImageView iv = new javafx.scene.image.ImageView(image);
+                iv.setFitWidth(300);
+                iv.setPreserveRatio(true);
+                
+                VBox box = new VBox(5);
+                Label lbl = new Label(seleccionado.getNombre() + " - " + img.getName());
+                lbl.setStyle("-fx-font-size: 10px;");
+                box.getChildren().addAll(iv, lbl);
+                box.setStyle("-fx-border-color: #ccc; -fx-padding: 5;");
                     
-                    VBox box = new VBox(5);
-                    Label lbl = new Label(seleccionado.getNombre() + " - " + img.getName());
-                    lbl.setStyle("-fx-font-size: 10px;");
-                    box.getChildren().addAll(iv, lbl);
-                    box.setStyle("-fx-border-color: #ccc; -fx-padding: 5;");
-                    
-                    // Click para ver en tamano completo
-                    iv.setOnMouseClicked(e -> {
-                        Stage fullStage = new Stage();
-                        fullStage.setTitle(img.getName());
-                        javafx.scene.image.ImageView fullIv = new javafx.scene.image.ImageView(image);
-                        javafx.scene.control.ScrollPane fullScroll = new javafx.scene.control.ScrollPane(fullIv);
-                        Scene fullScene = new Scene(fullScroll, 1000, 700);
-                        fullStage.setScene(fullScene);
-                        fullStage.show();
-                    });
-                    
-                    flow.getChildren().add(box);
-                } catch (Exception e) {
-                    // Ignorar imagenes que no se pueden cargar
-                }
+                // Click para ver en tamano completo
+                iv.setOnMouseClicked(e -> {
+                    Stage fullStage = new Stage();
+                    fullStage.setTitle(img.getName());
+                    javafx.scene.image.ImageView fullIv = new javafx.scene.image.ImageView(image);
+                    javafx.scene.control.ScrollPane fullScroll = new javafx.scene.control.ScrollPane(fullIv);
+                    Scene fullScene = new Scene(fullScroll, 1000, 700);
+                    fullStage.setScene(fullScene);
+                    fullStage.show();
+                });
+                
+                flow.getChildren().add(box);
+            } catch (Exception e) {
+                // Ignorar imagenes que no se pueden cargar
             }
         }
         
         if (flow.getChildren().isEmpty()) {
-            mostrarAlerta("Sin capturas", "No se encontraron capturas de la ultima ejecucion", Alert.AlertType.INFORMATION);
+            mostrarAlerta("Sin capturas", "No se encontraron capturas en la carpeta", Alert.AlertType.INFORMATION);
             return;
         }
         
@@ -1512,79 +1812,59 @@ public class ControladorPrincipal {
     /**
      * Limpia todas las imágenes de las carpetas de los proyectos seleccionados
      */
-    private void limpiarImagenesSeleccionadas() {
+    private void limpiarConfiguracionImagenes() {
         List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
             .collect(Collectors.toList());
         
         if (seleccionados.isEmpty()) {
-            mostrarAlerta("Sin seleccion", "Selecciona al menos un proyecto para limpiar sus imagenes", Alert.AlertType.WARNING);
+            mostrarAlerta("Sin selección", "Selecciona al menos un proyecto para limpiar su configuración de imágenes", Alert.AlertType.WARNING);
             return;
         }
         
         // Confirmación
         Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
-        confirmacion.setTitle("Confirmar limpieza");
-        confirmacion.setHeaderText("¿Eliminar todas las imagenes de los proyectos seleccionados?");
-        confirmacion.setContentText("Se eliminaran permanentemente todas las imagenes de las carpetas de captura de " + seleccionados.size() + " proyecto(s)");
+        confirmacion.setTitle("Confirmar limpieza de configuración");
+        confirmacion.setHeaderText("¿Limpiar configuración de imágenes guardadas?");
+        confirmacion.setContentText("Se eliminará la lista de imágenes seleccionadas de " + seleccionados.size() + " proyecto(s).\nLos archivos físicos NO serán eliminados.\n\nÚtil cuando el selector no muestra todas las imágenes de la carpeta.");
         
         if (confirmacion.showAndWait().get() != ButtonType.OK) {
             return;
         }
         
-        agregarLog("=== LIMPIEZA DE IMAGENES INICIADA ===");
+        agregarLog("=== LIMPIEZA DE CONFIGURACIÓN INICIADA ===");
         agregarLog("Proyectos seleccionados: " + seleccionados.size());
 
-        int totalEliminadas = 0;
-        int carpetasProcesadas = 0;
+        int proyectosLimpiados = 0;
         StringBuilder resultados = new StringBuilder();
 
         for (ProyectoAutomatizacion proyAuto : seleccionados) {
-            String rutaImgs = proyAuto.getRutaImagenes();
-            if (rutaImgs == null || rutaImgs.isEmpty()) {
-                rutaImgs = proyAuto.getRuta() + "\\test-output\\capturaPantalla";
+            // Limpiar la lista de imágenes seleccionadas guardadas
+            int imagenesAntes = 0;
+            if (proyAuto.getImagenesSeleccionadas() != null) {
+                imagenesAntes = proyAuto.getImagenesSeleccionadas().size();
             }
-
-            java.io.File dirImagenes = new java.io.File(rutaImgs);
-            if (!dirImagenes.exists() || !dirImagenes.isDirectory()) {
-                agregarLog("  ⚠ " + proyAuto.getNombre() + ": Carpeta no existe");
-                resultados.append("- ").append(proyAuto.getNombre()).append(": Carpeta no existe\n");
-                continue;
-            }
-            // Eliminar todas las imágenes encontradas en la carpeta (sin filtrar por edad)
-            java.io.File[] archivos = dirImagenes.listFiles((dir, name) ->
-                name.toLowerCase().endsWith(".png") ||
-                name.toLowerCase().endsWith(".jpg") ||
-                name.toLowerCase().endsWith(".jpeg"));
-
-            int eliminadasEnProyecto = 0;
-            if (archivos != null && archivos.length > 0) {
-                for (java.io.File img : archivos) {
-                    if (img.delete()) {
-                        eliminadasEnProyecto++;
-                    }
-                }
-            }
-
-            if (eliminadasEnProyecto == 0) {
-                agregarLog("  ℹ " + proyAuto.getNombre() + ": No se encontraron imágenes antiguas (>24h) para eliminar");
+            
+            proyAuto.setImagenesSeleccionadas(new ArrayList<>());
+            proyectosLimpiados++;
+            
+            if (imagenesAntes > 0) {
+                agregarLog("  ✓ " + proyAuto.getNombre() + ": " + imagenesAntes + " imágenes guardadas eliminadas de la configuración");
+                resultados.append("✓ ").append(proyAuto.getNombre()).append(": ").append(imagenesAntes).append(" imágenes guardadas eliminadas\n");
             } else {
-                agregarLog("  ✓ " + proyAuto.getNombre() + ": " + eliminadasEnProyecto + " imagenes antiguas eliminadas");
+                agregarLog("  ℹ " + proyAuto.getNombre() + ": No tenía imágenes guardadas");
+                resultados.append("ℹ ").append(proyAuto.getNombre()).append(": Sin imágenes guardadas\n");
             }
-
-            totalEliminadas += eliminadasEnProyecto;
-            carpetasProcesadas++;
-            resultados.append("✓ ").append(proyAuto.getNombre()).append(": ").append(eliminadasEnProyecto).append(" imagenes eliminadas\n");
         }
 
+        // Guardar cambios en proyectos.json
+        guardarProyectos();
+
         agregarLog("=== LIMPIEZA COMPLETADA ===");
-        agregarLog("Total imagenes eliminadas: " + totalEliminadas);
-        agregarLog("Carpetas procesadas: " + carpetasProcesadas);
+        agregarLog("Proyectos actualizados: " + proyectosLimpiados);
 
-        // NO guardar - no hay cambios en configuración
-
-        String mensaje = String.format("Limpieza completada:\n\nTotal imagenes eliminadas: %d\nCarpetas procesadas: %d\n\nDetalle:\n%s",
-            totalEliminadas, carpetasProcesadas, resultados.toString());
+        String mensaje = String.format("Limpieza de configuración completada:\n\nProyectos actualizados: %d\n\nDetalle:\n%s\nAhora el selector mostrará TODAS las imágenes de la carpeta.",
+            proyectosLimpiados, resultados.toString());
 
         mostrarAlerta("Limpieza Completa", mensaje, Alert.AlertType.INFORMATION);
     }
@@ -1619,12 +1899,15 @@ public class ControladorPrincipal {
         // Ordenar por fecha de modificación (las más recientes primero)
         java.util.Arrays.sort(archivos, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
         
-        // Obtener el set más reciente (imágenes con timestamp similar - 2 minutos)
+        // Obtener solo las imágenes de la última ejecución del test
+        // Se agrupan todas las imágenes que están dentro de 15 minutos desde la más reciente
+        // Esto permite tests largos pero evita mezclar con ejecuciones anteriores
         List<java.io.File> setReciente = new ArrayList<>();
         if (archivos.length > 0) {
             long timestampBase = archivos[0].lastModified();
             for (java.io.File img : archivos) {
-                if (Math.abs(img.lastModified() - timestampBase) <= 120000) {
+                // 15 minutos = 900000 ms (permite tests largos sin perder evidencias)
+                if (Math.abs(img.lastModified() - timestampBase) <= 900000) {
                     setReciente.add(img);
                 }
             }

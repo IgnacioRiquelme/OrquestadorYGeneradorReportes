@@ -125,9 +125,36 @@ public class GeneradorDocumentos {
         List<File> imagenesValidas = new ArrayList<>();
         List<String> alertas = new ArrayList<>();
         
+        System.out.println("[DEBUG VALIDACION] Ruta imagenes: " + proyecto.getRutaImagenes());
+        System.out.println("[DEBUG VALIDACION] Patrones ORIGINALES guardados: " + proyecto.getImagenesSeleccionadas());
+        
+        // Normalizar patrones antiguos: si tienen números largos, eliminarlos
+        List<String> patronesNormalizados = new ArrayList<>();
         for (String patron : proyecto.getImagenesSeleccionadas()) {
+            // Crear un nombre de archivo ficticio para poder usar extraerPatron
+            String nombreFicticio = patron + "20250101_000000.png";
+            String patronNormalizado = GestorImagenes.extraerPatron(nombreFicticio);
+            if (patronNormalizado != null) {
+                patronesNormalizados.add(patronNormalizado);
+                System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' normalizado a: '" + patronNormalizado + "'");
+            } else {
+                patronesNormalizados.add(patron);
+                System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' sin cambios (no se pudo normalizar)");
+            }
+        }
+        
+        System.out.println("[DEBUG VALIDACION] Patrones NORMALIZADOS: " + patronesNormalizados);
+        
+        for (String patron : patronesNormalizados) {
+            System.out.println("[DEBUG VALIDACION] Buscando patron: '" + patron + "'");
+            
             List<File> imagenesPatron = GestorImagenes.obtenerImagenesPorPatron(
                 proyecto.getRutaImagenes(), patron);
+            
+            System.out.println("[DEBUG VALIDACION] Imagenes encontradas para '" + patron + "': " + imagenesPatron.size());
+            if (!imagenesPatron.isEmpty()) {
+                System.out.println("[DEBUG VALIDACION] Primera imagen: " + imagenesPatron.get(0).getName());
+            }
             
             if (imagenesPatron.isEmpty()) {
                 alertas.add("⚠️ No se encontraron imágenes para: " + patron);
