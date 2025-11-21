@@ -24,6 +24,7 @@ public class ProyectoAutomatizacion {
     private String rutaSalidaPdf;
     private java.util.List<String> imagenesSeleccionadas = new java.util.ArrayList<>();
     private boolean reporteGenerado; // Estado de la generación del informe
+    private boolean esProyectoManual = false; // Si es true, imagenesSeleccionadas contiene rutas absolutas
 
     public enum TipoVPN {
         SIN_VPN("Sin VPN"),
@@ -233,6 +234,14 @@ public class ProyectoAutomatizacion {
 
     public void setMensajeError(String mensajeError) {
         this.mensajeError = mensajeError;
+    }
+
+    public boolean isEsProyectoManual() {
+        return esProyectoManual;
+    }
+
+    public void setEsProyectoManual(boolean esProyectoManual) {
+        this.esProyectoManual = esProyectoManual;
     }
 }
 

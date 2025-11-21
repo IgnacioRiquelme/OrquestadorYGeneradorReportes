@@ -125,53 +125,75 @@ public class GeneradorDocumentos {
         List<File> imagenesValidas = new ArrayList<>();
         List<String> alertas = new ArrayList<>();
         
+        // DETECTAR PROYECTO MANUAL: Flag esProyectoManual indica que las imágenes se cargaron manualmente
+        boolean esProyectoManual = proyecto.isEsProyectoManual();
+        
+        System.out.println("[DEBUG VALIDACION] Proyecto manual: " + esProyectoManual);
         System.out.println("[DEBUG VALIDACION] Ruta imagenes: " + proyecto.getRutaImagenes());
-        System.out.println("[DEBUG VALIDACION] Patrones ORIGINALES guardados: " + proyecto.getImagenesSeleccionadas());
+        System.out.println("[DEBUG VALIDACION] Patrones/Rutas guardadas: " + proyecto.getImagenesSeleccionadas());
         
-        // Normalizar patrones antiguos: si tienen números largos, eliminarlos
-        List<String> patronesNormalizados = new ArrayList<>();
-        for (String patron : proyecto.getImagenesSeleccionadas()) {
-            // Crear un nombre de archivo ficticio para poder usar extraerPatron
-            String nombreFicticio = patron + "20250101_000000.png";
-            String patronNormalizado = GestorImagenes.extraerPatron(nombreFicticio);
-            if (patronNormalizado != null) {
-                patronesNormalizados.add(patronNormalizado);
-                System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' normalizado a: '" + patronNormalizado + "'");
-            } else {
-                patronesNormalizados.add(patron);
-                System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' sin cambios (no se pudo normalizar)");
-            }
-        }
-        
-        System.out.println("[DEBUG VALIDACION] Patrones NORMALIZADOS: " + patronesNormalizados);
-        
-        for (String patron : patronesNormalizados) {
-            System.out.println("[DEBUG VALIDACION] Buscando patron: '" + patron + "'");
-            
-            List<File> imagenesPatron = GestorImagenes.obtenerImagenesPorPatron(
-                proyecto.getRutaImagenes(), patron);
-            
-            System.out.println("[DEBUG VALIDACION] Imagenes encontradas para '" + patron + "': " + imagenesPatron.size());
-            if (!imagenesPatron.isEmpty()) {
-                System.out.println("[DEBUG VALIDACION] Primera imagen: " + imagenesPatron.get(0).getName());
+        if (esProyectoManual) {
+            // Para proyectos manuales, las imágenes ya están guardadas con rutas absolutas
+            // Solo necesitamos validar que existan y convertirlas a File
+            for (String rutaAbsoluta : proyecto.getImagenesSeleccionadas()) {
+                File imagen = new File(rutaAbsoluta);
+                if (imagen.exists() && imagen.isFile()) {
+                    imagenesValidas.add(imagen);
+                    System.out.println("[DEBUG VALIDACION MANUAL] Imagen válida: " + imagen.getName());
+                } else {
+                    alertas.add("⚠️ Imagen no encontrada: " + rutaAbsoluta);
+                    System.out.println("[DEBUG VALIDACION MANUAL] Imagen NO encontrada: " + rutaAbsoluta);
+                }
             }
             
-            if (imagenesPatron.isEmpty()) {
-                alertas.add("⚠️ No se encontraron imágenes para: " + patron);
-                continue;
+            System.out.println("[DEBUG VALIDACION MANUAL] Total imágenes válidas: " + imagenesValidas.size());
+        } else {
+            // PROYECTO AUTOMATIZADO: Buscar por patrones
+            // Normalizar patrones antiguos: si tienen números largos, eliminarlos
+            List<String> patronesNormalizados = new ArrayList<>();
+            for (String patron : proyecto.getImagenesSeleccionadas()) {
+                // Crear un nombre de archivo ficticio para poder usar extraerPatron
+                String nombreFicticio = patron + "20250101_000000.png";
+                String patronNormalizado = GestorImagenes.extraerPatron(nombreFicticio);
+                if (patronNormalizado != null) {
+                    patronesNormalizados.add(patronNormalizado);
+                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' normalizado a: '" + patronNormalizado + "'");
+                } else {
+                    patronesNormalizados.add(patron);
+                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' sin cambios (no se pudo normalizar)");
+                }
             }
             
-            // Validar rango de tiempo
-            Map<String, Object> validacion = GestorImagenes.validarRangoTiempo(imagenesPatron);
-            List<File> validas = (List<File>) validacion.get("imagenesValidas");
-            List<String> alertasValidacion = (List<String>) validacion.get("alertas");
+            System.out.println("[DEBUG VALIDACION] Patrones NORMALIZADOS: " + patronesNormalizados);
             
-            alertas.addAll(alertasValidacion);
-            
-            if (validas.isEmpty()) {
-                alertas.add("⚠️ Imagen " + patron + " fuera de rango de tiempo permitido");
-            } else {
-                imagenesValidas.add(validas.get(0)); // Tomar la más reciente
+            for (String patron : patronesNormalizados) {
+                System.out.println("[DEBUG VALIDACION] Buscando patron: '" + patron + "'");
+                
+                List<File> imagenesPatron = GestorImagenes.obtenerImagenesPorPatron(
+                    proyecto.getRutaImagenes(), patron);
+                
+                System.out.println("[DEBUG VALIDACION] Imagenes encontradas para '" + patron + "': " + imagenesPatron.size());
+                if (!imagenesPatron.isEmpty()) {
+                    System.out.println("[DEBUG VALIDACION] Primera imagen: " + imagenesPatron.get(0).getName());
+                }
+                
+                if (imagenesPatron.isEmpty()) {
+                    alertas.add("⚠️ No se encontraron imágenes para: " + patron);
+                    continue;
+                }
+                
+                // Validar rango de tiempo
+                Map<String, Object> validacion = GestorImagenes.validarRangoTiempo(imagenesPatron);
+                List<File> validas = (List<File>) validacion.get("imagenesValidas");
+                List<String> alertasValidacion = (List<String>) validacion.get("alertas");
+                
+                alertas.addAll(alertasValidacion);
+                
+                if (validas.isEmpty()) {
+                    alertas.add("⚠️ Imagen " + patron + " fuera de rango de tiempo permitido");
+                } else {
+                    imagenesValidas.add(validas.get(0)); // Tomar la más reciente
+                }
             }
         }
         

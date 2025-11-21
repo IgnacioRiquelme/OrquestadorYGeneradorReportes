@@ -38,7 +38,7 @@ public class ControladorPrincipal {
     private ObservableList<ProyectoAutomatizacion> proyectos;
     private TextArea logArea;
     private Label lblEstadisticas;
-    private Button btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEditar, btnEliminar, btnLimpiarImagenes;
+    private Button btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEditar, btnEliminar;
     private ComboBox<String> cboFiltroArea;
     private EjecutorAutomatizaciones ejecutor;
     private boolean ejecutando = false;
@@ -137,12 +137,7 @@ public class ControladorPrincipal {
         btnGenerarInformes.setStyle("-fx-background-color: #FF6F00; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
         btnGenerarInformes.setOnAction(e -> generarInformes());
         
-        btnLimpiarImagenes = new Button("🗑 Limpiar Configuración");
-        btnLimpiarImagenes.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
-        btnLimpiarImagenes.setOnAction(e -> limpiarConfiguracionImagenes());
-        btnLimpiarImagenes.setTooltip(new javafx.scene.control.Tooltip("Limpia las imágenes guardadas de los proyectos seleccionados (no elimina archivos físicos)"));
-        
-        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnLimpiarImagenes);
+        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes);
         
         header.getChildren().addAll(titulo, botonesAccion, botonesEjecucion);
         return header;
@@ -275,15 +270,22 @@ public class ControladorPrincipal {
         });
         colReporte.setMinWidth(100);
         
-        // Columna Configurar (solo para proyectos especiales con credenciales)
+        // Columna Configurar (para proyectos especiales con credenciales O proyectos manuales sin ruta)
         TableColumn<ProyectoAutomatizacion, Void> colConfigurar = new TableColumn<>("Configurar");
         colConfigurar.setCellFactory(param -> new javafx.scene.control.TableCell<ProyectoAutomatizacion, Void>() {
             private final Button btnConfigurar = new Button("⚙️ Config");
+            private final Button btnCargarImagenes = new Button("📁 Cargar Imágenes");
             {
                 btnConfigurar.setStyle("-fx-background-color: #FF9800; -fx-text-fill: white; -fx-font-weight: bold;");
                 btnConfigurar.setOnAction(event -> {
                     ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
                     abrirDialogoCredenciales(proyecto);
+                });
+                
+                btnCargarImagenes.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+                btnCargarImagenes.setOnAction(event -> {
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    abrirDialogoCargaImagenesManual(proyecto);
                 });
             }
             @Override
@@ -293,7 +295,12 @@ public class ControladorPrincipal {
                     setGraphic(null);
                 } else {
                     ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
-                    if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
+                    // Proyecto manual: sin ruta de automatización
+                    boolean esManual = proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty();
+                    
+                    if (esManual) {
+                        setGraphic(btnCargarImagenes);
+                    } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
                         setGraphic(btnConfigurar);
                     } else {
                         setGraphic(null);
@@ -301,7 +308,7 @@ public class ControladorPrincipal {
                 }
             }
         });
-        colConfigurar.setMinWidth(100);
+        colConfigurar.setMinWidth(150);
         
         tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colConfigurar);
         
@@ -473,7 +480,22 @@ public class ControladorPrincipal {
         });
         
         btnSelectorVisual.setOnAction(e -> {
-            List<String> seleccionadas = mostrarSelectorImagenesVisual(txtRutaImagenes.getText(), imagenesSeleccionadasManualmente);
+            String ruta = txtRutaImagenes.getText();
+            if (ruta == null || ruta.trim().isEmpty()) {
+                // Permitir elegir carpeta si no hay ruta definida
+                javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
+                chooser.setTitle("Seleccionar carpeta de imágenes");
+                java.io.File folder = chooser.showDialog(dialog.getOwner());
+                if (folder != null) {
+                    txtRutaImagenes.setText(folder.getAbsolutePath());
+                    ruta = folder.getAbsolutePath();
+                } else {
+                    // El usuario canceló, no abrir el selector
+                    return;
+                }
+            }
+
+            List<String> seleccionadas = mostrarSelectorImagenesVisual(ruta, imagenesSeleccionadasManualmente);
             imagenesSeleccionadasManualmente.clear();
             imagenesSeleccionadasManualmente.addAll(seleccionadas);
             if (!seleccionadas.isEmpty()) {
@@ -565,11 +587,25 @@ public class ControladorPrincipal {
         
         dialog.setResultConverter(dialogButton -> {
             if (dialogButton == btnAceptar) {
-                if (txtNombre.getText().isEmpty() || txtRuta.getText().isEmpty()) {
-                    mostrarAlerta("Error", "Nombre y ruta son obligatorios", Alert.AlertType.ERROR);
+                // Nombre es obligatorio
+                if (txtNombre.getText().isEmpty()) {
+                    mostrarAlerta("Error", "El nombre es obligatorio", Alert.AlertType.ERROR);
                     return null;
                 }
+
+                // Permitir ruta vacía si:
+                // 1) Se marcó checkbox de selección manual
+                // 2) Se proporcionó ruta de imágenes
+                // 3) Se proporcionó template Word (indica intención de generar informes)
+                boolean rutaVacia = txtRuta.getText() == null || txtRuta.getText().trim().isEmpty();
+                boolean tieneRutaImagenes = txtRutaImagenes.getText() != null && !txtRutaImagenes.getText().trim().isEmpty();
+                boolean tieneTemplate = txtTemplate.getText() != null && !txtTemplate.getText().trim().isEmpty();
                 
+                if (rutaVacia && !chkSeleccionar.isSelected() && !tieneRutaImagenes && !tieneTemplate) {
+                    mostrarAlerta("Error", "Debe proporcionar:\n- Ruta del proyecto, o\n- Marcar 'Seleccionar imágenes manualmente', o\n- Especificar 'Ruta de imágenes' o 'Template Word'", Alert.AlertType.ERROR);
+                    return null;
+                }
+
                 ProyectoAutomatizacion proyecto = new ProyectoAutomatizacion(
                     txtNombre.getText(),
                     txtRuta.getText(),
@@ -577,18 +613,24 @@ public class ControladorPrincipal {
                     cboVPN.getValue(),
                     cboTipo.getValue()
                 );
-                
+
+                // Si no hay ruta al proyecto, marcar como proyecto manual y avisar
+                if (rutaVacia) {
+                    proyecto.setEsProyectoManual(true);
+                    mostrarAlerta("Advertencia", "No se especificó la ruta del proyecto. El proyecto será generado en modo manual.", Alert.AlertType.WARNING);
+                }
+
                 // Configuración para generación de informes
                 proyecto.setRutaImagenes(txtRutaImagenes.getText());
                 proyecto.setRutaTemplateWord(txtTemplate.getText());
                 proyecto.setRutaSalidaWord(txtSalidaWord.getText());
                 proyecto.setRutaSalidaPdf(txtSalidaPdf.getText());
-                
+
                 // Si usó selector manual, guardar esas imágenes
                 if (chkSeleccionar.isSelected() && !imagenesSeleccionadasManualmente.isEmpty()) {
                     proyecto.setImagenesSeleccionadas(imagenesSeleccionadasManualmente);
                 }
-                
+
                 return proyecto;
             }
             return null;
@@ -787,7 +829,22 @@ public class ControladorPrincipal {
         });
         
         btnSelectorVisual.setOnAction(e -> {
-            List<String> seleccionadas = mostrarSelectorImagenesVisual(txtRutaImagenes.getText(), imagenesSeleccionadasManualmente);
+            String ruta = txtRutaImagenes.getText();
+            if (ruta == null || ruta.trim().isEmpty()) {
+                // Permitir elegir carpeta si no hay ruta definida
+                javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
+                chooser.setTitle("Seleccionar carpeta de imágenes");
+                java.io.File folder = chooser.showDialog(dialog.getOwner());
+                if (folder != null) {
+                    txtRutaImagenes.setText(folder.getAbsolutePath());
+                    ruta = folder.getAbsolutePath();
+                } else {
+                    // El usuario canceló, no abrir el selector
+                    return;
+                }
+            }
+
+            List<String> seleccionadas = mostrarSelectorImagenesVisual(ruta, imagenesSeleccionadasManualmente);
             imagenesSeleccionadasManualmente.clear();
             // Convertir cada nombre de archivo a su patrón (hasta '_' antes del timestamp)
             for (String nombreArchivo : seleccionadas) {
@@ -891,6 +948,9 @@ public class ControladorPrincipal {
         contenido.getChildren().add(new Label("Lista de imágenes seleccionadas (orden):"));
         contenido.getChildren().add(tableSeleccionadas);
         
+        // Nota: el botón de "Limpiar Configuración" se muestra solo en la segunda pantalla
+        // (selector visual de imágenes). Se eliminó de esta primera pantalla intencionalmente.
+        
         javafx.scene.control.ScrollPane scrollContenido = new javafx.scene.control.ScrollPane(contenido);
         scrollContenido.setFitToWidth(true);
         scrollContenido.setPrefHeight(700);
@@ -901,24 +961,42 @@ public class ControladorPrincipal {
         
         dialog.setResultConverter(dialogButton -> {
             if (dialogButton == btnGuardar) {
-                if (txtNombre.getText().isEmpty() || txtRuta.getText().isEmpty()) {
-                    mostrarAlerta("Error", "Nombre y ruta son obligatorios", Alert.AlertType.ERROR);
+                // Nombre es obligatorio
+                if (txtNombre.getText().isEmpty()) {
+                    mostrarAlerta("Error", "El nombre es obligatorio", Alert.AlertType.ERROR);
                     return null;
                 }
-                
+
+                boolean rutaVacia = txtRuta.getText() == null || txtRuta.getText().trim().isEmpty();
+                boolean tieneRutaImagenes = txtRutaImagenes.getText() != null && !txtRutaImagenes.getText().trim().isEmpty();
+                boolean tieneTemplate = txtTemplate.getText() != null && !txtTemplate.getText().trim().isEmpty();
+
+                if (rutaVacia && !chkSeleccionar.isSelected() && !tieneRutaImagenes && !tieneTemplate) {
+                    mostrarAlerta("Error", "Debe proporcionar:\n- Ruta del proyecto, o\n- Marcar 'Seleccionar imágenes manualmente', o\n- Especificar 'Ruta de imágenes' o 'Template Word'", Alert.AlertType.ERROR);
+                    return null;
+                }
+
                 // Actualizar proyecto existente
                 seleccionado.setNombre(txtNombre.getText());
                 seleccionado.setRuta(txtRuta.getText());
                 seleccionado.setArea(cboArea.getValue());
                 seleccionado.setTipoVPN(cboVPN.getValue());
                 seleccionado.setTipoEjecucion(cboTipo.getValue());
-                
+
+                // Si no hay ruta al proyecto, marcar como proyecto manual y avisar
+                if (rutaVacia) {
+                    seleccionado.setEsProyectoManual(true);
+                    mostrarAlerta("Advertencia", "No se especificó la ruta del proyecto. El proyecto será generado en modo manual.", Alert.AlertType.WARNING);
+                } else {
+                    seleccionado.setEsProyectoManual(false);
+                }
+
                 // Configuración para generación de informes
                 seleccionado.setRutaImagenes(txtRutaImagenes.getText());
                 seleccionado.setRutaTemplateWord(txtTemplate.getText());
                 seleccionado.setRutaSalidaWord(txtSalidaWord.getText());
                 seleccionado.setRutaSalidaPdf(txtSalidaPdf.getText());
-                
+
                 // Si usó selector manual, validar que la tabla no esté vacía y convertir los nombres seleccionados a patrones y guardar
                 if (chkSeleccionar.isSelected()) {
                     if (imagenesSeleccionadasManualmente.isEmpty()) {
@@ -1703,9 +1781,14 @@ public class ControladorPrincipal {
                     Proyecto proyecto = new Proyecto();
                     proyecto.setNombre(proyAuto.getNombre());
                     
+                    // USAR EL FLAG DE PROYECTO MANUAL (o detectar si no está configurado)
+                    boolean esManual = proyAuto.isEsProyectoManual() || 
+                                      (proyAuto.getRuta() == null || proyAuto.getRuta().trim().isEmpty());
+                    proyecto.setEsProyectoManual(esManual);
+                    
                     // Ruta de imagenes: usar configurada o carpeta de capturas por defecto
                     String rutaImgs = proyAuto.getRutaImagenes();
-                    if (rutaImgs == null || rutaImgs.isEmpty()) {
+                    if (!esManual && (rutaImgs == null || rutaImgs.isEmpty())) {
                         rutaImgs = proyAuto.getRuta() + "\\test-output\\capturaPantalla";
                     }
                     proyecto.setRutaImagenes(rutaImgs);
@@ -1810,63 +1893,230 @@ public class ControladorPrincipal {
     }
     
     /**
-     * Limpia todas las imágenes de las carpetas de los proyectos seleccionados
+     * Abre diálogo para cargar imágenes manualmente en proyectos sin automatización
+     * Formato de imágenes esperado: YYYY-MM-DD_HH-MM.png
      */
-    private void limpiarConfiguracionImagenes() {
-        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
-            .filter(ProyectoAutomatizacion::isSeleccionado)
-            .collect(Collectors.toList());
+    private void abrirDialogoCargaImagenesManual(ProyectoAutomatizacion proyecto) {
+        Dialog<List<String>> dialog = new Dialog<>();
+        dialog.setTitle("Cargar Imágenes Manual - " + proyecto.getNombre());
+        dialog.setHeaderText("📁 Proyecto sin automatización - Selección manual de imágenes");
         
-        if (seleccionados.isEmpty()) {
-            mostrarAlerta("Sin selección", "Selecciona al menos un proyecto para limpiar su configuración de imágenes", Alert.AlertType.WARNING);
-            return;
-        }
+        ButtonType btnGuardar = new ButtonType("Guardar y Usar", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
         
-        // Confirmación
-        Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
-        confirmacion.setTitle("Confirmar limpieza de configuración");
-        confirmacion.setHeaderText("¿Limpiar configuración de imágenes guardadas?");
-        confirmacion.setContentText("Se eliminará la lista de imágenes seleccionadas de " + seleccionados.size() + " proyecto(s).\nLos archivos físicos NO serán eliminados.\n\nÚtil cuando el selector no muestra todas las imágenes de la carpeta.");
+        VBox contenido = new VBox(15);
+        contenido.setPadding(new Insets(20));
+        contenido.setMinWidth(700);
         
-        if (confirmacion.showAndWait().get() != ButtonType.OK) {
-            return;
-        }
+        Label lblInfo = new Label("Este proyecto no tiene ruta de automatización configurada.\nPuedes cargar imágenes manualmente para generar el informe.\n\n✨ Funcionalidades:\n  • Arrastra archivos desde Windows Explorer\n  • Reordena imágenes arrastrándolas dentro de la lista");
+        lblInfo.setStyle("-fx-font-size: 12px; -fx-text-fill: #555;");
+        lblInfo.setWrapText(true);
         
-        agregarLog("=== LIMPIEZA DE CONFIGURACIÓN INICIADA ===");
-        agregarLog("Proyectos seleccionados: " + seleccionados.size());
-
-        int proyectosLimpiados = 0;
-        StringBuilder resultados = new StringBuilder();
-
-        for (ProyectoAutomatizacion proyAuto : seleccionados) {
-            // Limpiar la lista de imágenes seleccionadas guardadas
-            int imagenesAntes = 0;
-            if (proyAuto.getImagenesSeleccionadas() != null) {
-                imagenesAntes = proyAuto.getImagenesSeleccionadas().size();
+        Label lblFormato = new Label("📋 Formatos aceptados: 2025-11-20_22-29.png o 2025-11-20_22-29-45.png");
+        lblFormato.setStyle("-fx-font-weight: bold; -fx-text-fill: #2196F3;");
+        
+        // Ruta de carpeta de imágenes
+        Label lblCarpeta = new Label("Carpeta de imágenes:");
+        TextField txtCarpeta = new TextField();
+        txtCarpeta.setPromptText("Selecciona la carpeta con las imágenes...");
+        
+        Button btnExaminar = new Button("📂 Examinar Carpeta");
+        btnExaminar.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white;");
+        
+        HBox hboxCarpeta = new HBox(10, txtCarpeta, btnExaminar);
+        HBox.setHgrow(txtCarpeta, Priority.ALWAYS);
+        
+        // Lista de imágenes seleccionadas (ordenadas cronológicamente)
+        Label lblSeleccionadas = new Label("✅ Imágenes seleccionadas (orden: más antigua → más nueva):");
+        lblSeleccionadas.setStyle("-fx-font-weight: bold;");
+        
+        javafx.scene.control.ListView<String> listViewImagenes = new javafx.scene.control.ListView<>();
+        listViewImagenes.setPrefHeight(300);
+        
+        Label lblCount = new Label("Total: 0 imágenes");
+        lblCount.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+        
+        // Lista observable para mantener las imágenes ordenadas
+        javafx.collections.ObservableList<String> imagenesOrdenadas = javafx.collections.FXCollections.observableArrayList();
+        listViewImagenes.setItems(imagenesOrdenadas);
+        
+        // ===== DRAG & DROP INTERNO: Reordenar elementos dentro de la lista =====
+        listViewImagenes.setCellFactory(lv -> {
+            javafx.scene.control.ListCell<String> cell = new javafx.scene.control.ListCell<String>() {
+                @Override
+                protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    if (empty || item == null) {
+                        setText(null);
+                    } else {
+                        setText(new java.io.File(item).getName());
+                    }
+                }
+            };
+            
+            // Detectar inicio de arrastre
+            cell.setOnDragDetected(event -> {
+                if (!cell.isEmpty()) {
+                    javafx.scene.input.Dragboard db = cell.startDragAndDrop(javafx.scene.input.TransferMode.MOVE);
+                    javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                    content.putString(cell.getItem());
+                    db.setContent(content);
+                    event.consume();
+                }
+            });
+            
+            // Permitir soltar sobre esta celda
+            cell.setOnDragOver(event -> {
+                if (event.getGestureSource() != cell && event.getDragboard().hasString()) {
+                    event.acceptTransferModes(javafx.scene.input.TransferMode.MOVE);
+                }
+                event.consume();
+            });
+            
+            // Ejecutar reordenamiento al soltar
+            cell.setOnDragDropped(event -> {
+                javafx.scene.input.Dragboard db = event.getDragboard();
+                boolean success = false;
+                if (db.hasString() && !cell.isEmpty()) {
+                    String draggedItem = db.getString();
+                    String targetItem = cell.getItem();
+                    
+                    int draggedIdx = imagenesOrdenadas.indexOf(draggedItem);
+                    int targetIdx = imagenesOrdenadas.indexOf(targetItem);
+                    
+                    if (draggedIdx >= 0 && targetIdx >= 0) {
+                        imagenesOrdenadas.remove(draggedIdx);
+                        if (draggedIdx < targetIdx) {
+                            imagenesOrdenadas.add(targetIdx, draggedItem);
+                        } else {
+                            imagenesOrdenadas.add(targetIdx, draggedItem);
+                        }
+                        success = true;
+                    }
+                }
+                event.setDropCompleted(success);
+                event.consume();
+            });
+            
+            return cell;
+        });
+        
+        // ===== DRAG & DROP EXTERNO: Arrastrar archivos desde Windows Explorer =====
+        listViewImagenes.setOnDragOver(event -> {
+            if (event.getDragboard().hasFiles()) {
+                event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+            }
+            event.consume();
+        });
+        
+        listViewImagenes.setOnDragDropped(event -> {
+            javafx.scene.input.Dragboard db = event.getDragboard();
+            boolean success = false;
+            
+            if (db.hasFiles()) {
+                for (java.io.File file : db.getFiles()) {
+                    String name = file.getName().toLowerCase();
+                    // Validar extensión
+                    if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+                        String rutaAbsoluta = file.getAbsolutePath();
+                        if (!imagenesOrdenadas.contains(rutaAbsoluta)) {
+                            imagenesOrdenadas.add(rutaAbsoluta);
+                            success = true;
+                        }
+                    }
+                }
+                
+                if (success) {
+                    lblCount.setText("Total: " + imagenesOrdenadas.size() + " imágenes");
+                    mostrarAlerta("Imágenes agregadas", 
+                        "Se agregaron las imágenes arrastradas.\nPuedes reordenarlas arrastrándolas dentro de la lista.", 
+                        Alert.AlertType.INFORMATION);
+                }
             }
             
-            proyAuto.setImagenesSeleccionadas(new ArrayList<>());
-            proyectosLimpiados++;
+            event.setDropCompleted(success);
+            event.consume();
+        });
+        
+        btnExaminar.setOnAction(e -> {
+            javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
+            chooser.setTitle("Seleccionar carpeta de imágenes");
+            java.io.File carpeta = chooser.showDialog(dialog.getOwner());
             
-            if (imagenesAntes > 0) {
-                agregarLog("  ✓ " + proyAuto.getNombre() + ": " + imagenesAntes + " imágenes guardadas eliminadas de la configuración");
-                resultados.append("✓ ").append(proyAuto.getNombre()).append(": ").append(imagenesAntes).append(" imágenes guardadas eliminadas\n");
-            } else {
-                agregarLog("  ℹ " + proyAuto.getNombre() + ": No tenía imágenes guardadas");
-                resultados.append("ℹ ").append(proyAuto.getNombre()).append(": Sin imágenes guardadas\n");
+            if (carpeta != null && carpeta.exists()) {
+                txtCarpeta.setText(carpeta.getAbsolutePath());
+                
+                // Buscar todas las imágenes con formato YYYY-MM-DD_HH-MM.png o YYYY-MM-DD_HH-MM-SS.png
+                java.io.File[] archivos = carpeta.listFiles((dir, name) -> {
+                    String lower = name.toLowerCase();
+                    return (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")) 
+                        && name.matches("\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}(-\\d{2})?\\.(png|jpg|jpeg)");
+                });
+                
+                if (archivos != null && archivos.length > 0) {
+                    // Ordenar por nombre (que incluye timestamp) de más antigua a más nueva
+                    java.util.Arrays.sort(archivos, (a, b) -> a.getName().compareTo(b.getName()));
+                    
+                    imagenesOrdenadas.clear();
+                    for (java.io.File img : archivos) {
+                        imagenesOrdenadas.add(img.getAbsolutePath());
+                    }
+                    
+                    lblCount.setText("Total: " + archivos.length + " imágenes");
+                    mostrarAlerta("Imágenes cargadas", 
+                        "Se encontraron " + archivos.length + " imágenes válidas.\nOrden: más antigua → más nueva", 
+                        Alert.AlertType.INFORMATION);
+                } else {
+                    imagenesOrdenadas.clear();
+                    lblCount.setText("Total: 0 imágenes");
+                    mostrarAlerta("Sin imágenes", 
+                        "No se encontraron imágenes con formato válido (YYYY-MM-DD_HH-MM.png o YYYY-MM-DD_HH-MM-SS.png)", 
+                        Alert.AlertType.WARNING);
+                }
             }
-        }
-
-        // Guardar cambios en proyectos.json
-        guardarProyectos();
-
-        agregarLog("=== LIMPIEZA COMPLETADA ===");
-        agregarLog("Proyectos actualizados: " + proyectosLimpiados);
-
-        String mensaje = String.format("Limpieza de configuración completada:\n\nProyectos actualizados: %d\n\nDetalle:\n%s\nAhora el selector mostrará TODAS las imágenes de la carpeta.",
-            proyectosLimpiados, resultados.toString());
-
-        mostrarAlerta("Limpieza Completa", mensaje, Alert.AlertType.INFORMATION);
+        });
+        
+        contenido.getChildren().addAll(
+            lblInfo, 
+            new javafx.scene.control.Separator(),
+            lblFormato,
+            lblCarpeta,
+            hboxCarpeta,
+            new javafx.scene.control.Separator(),
+            lblSeleccionadas,
+            listViewImagenes,
+            lblCount
+        );
+        
+        dialog.getDialogPane().setContent(contenido);
+        
+        dialog.setResultConverter(dialogButton -> {
+            if (dialogButton == btnGuardar) {
+                if (imagenesOrdenadas.isEmpty()) {
+                    mostrarAlerta("Error", "Debes seleccionar al menos una imagen", Alert.AlertType.ERROR);
+                    return null;
+                }
+                return new ArrayList<>(imagenesOrdenadas);
+            }
+            return null;
+        });
+        
+        Optional<List<String>> resultado = dialog.showAndWait();
+        resultado.ifPresent(imagenes -> {
+            // Guardar las imágenes en el proyecto (rutas absolutas)
+            proyecto.setImagenesSeleccionadas(imagenes);
+            // Marcar como proyecto manual (sin automatización)
+            proyecto.setEsProyectoManual(true);
+            // Guardar la carpeta como "ruta de imágenes"
+            if (!txtCarpeta.getText().isEmpty()) {
+                proyecto.setRutaImagenes(txtCarpeta.getText());
+            }
+            guardarProyectos();
+            agregarLog("✓ " + proyecto.getNombre() + ": " + imagenes.size() + " imágenes cargadas manualmente");
+            mostrarAlerta("Imágenes guardadas", 
+                "Se guardaron " + imagenes.size() + " imágenes.\nYa puedes generar el informe.", 
+                Alert.AlertType.INFORMATION);
+        });
     }
     
     /**
@@ -1970,43 +2220,34 @@ public class ControladorPrincipal {
             }
         });
         
-        // Botón para BORRAR físicamente imagen seleccionada del disco
-        Button btnBorrarArchivo = new Button("🗑️ Borrar del Disco");
-        btnBorrarArchivo.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold;");
-        btnBorrarArchivo.setOnAction(e -> {
-            String seleccionada = listViewSeleccionadas.getSelectionModel().getSelectedItem();
-            if (seleccionada != null) {
-                Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
-                confirmacion.setTitle("Confirmar eliminación");
-                confirmacion.setHeaderText("¿Borrar imagen del disco?");
-                confirmacion.setContentText("Se eliminará permanentemente: " + seleccionada);
+        // Botón para limpiar toda la configuración de imágenes guardadas
+        Button btnLimpiarConfig = new Button("🗑️ Limpiar Configuración");
+        btnLimpiarConfig.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnLimpiarConfig.setTooltip(new javafx.scene.control.Tooltip("Limpia todas las imágenes guardadas (no elimina archivos físicos)"));
+        btnLimpiarConfig.setOnAction(e -> {
+            if (imagenesOrdenadas.isEmpty()) {
+                mostrarAlerta("Sin configuración", "No hay imágenes seleccionadas para limpiar", Alert.AlertType.INFORMATION);
+                return;
+            }
+            
+            Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
+            confirmacion.setTitle("Confirmar limpieza");
+            confirmacion.setHeaderText("¿Limpiar configuración de imágenes?");
+            confirmacion.setContentText("Se eliminarán " + imagenesOrdenadas.size() + " imágenes de la lista.\nLos archivos físicos NO serán eliminados.");
+            
+            if (confirmacion.showAndWait().get() == ButtonType.OK) {
+                imagenesOrdenadas.clear();
+                listViewSeleccionadas.getItems().clear();
                 
-                if (confirmacion.showAndWait().get() == ButtonType.OK) {
-                    java.io.File archivoABorrar = new java.io.File(rutaImagenes, seleccionada);
-                    if (archivoABorrar.exists() && archivoABorrar.delete()) {
-                        // Quitar de la lista
-                        imagenesOrdenadas.remove(seleccionada);
-                        listViewSeleccionadas.getItems().remove(seleccionada);
-                        
-                        // Quitar del FlowPane
-                        panelImagenesFlow.getChildren().removeIf(node -> {
-                            if (node instanceof VBox) {
-                                VBox vb = (VBox) node;
-                                return seleccionada.equals(vb.getUserData());
-                            }
-                            return false;
-                        });
-                        
-                        mostrarAlerta("Imagen borrada", "La imagen se eliminó del disco correctamente", Alert.AlertType.INFORMATION);
-                    } else {
-                        mostrarAlerta("Error", "No se pudo borrar el archivo", Alert.AlertType.ERROR);
-                    }
-                }
+                // Reactivar todos los botones
+                actualizarBotonesFlow(panelImagenesFlow, imagenesOrdenadas);
+                
+                mostrarAlerta("Configuración limpiada", "Se limpiaron todas las imágenes de la lista", Alert.AlertType.INFORMATION);
             }
         });
         
         HBox botonesListaSeleccionadas = new HBox(10);
-        botonesListaSeleccionadas.getChildren().addAll(btnQuitar, btnBorrarArchivo);
+        botonesListaSeleccionadas.getChildren().addAll(btnQuitar, btnLimpiarConfig);
         panelSeleccionadas.getChildren().add(botonesListaSeleccionadas);
         
         // Agregar cada imagen del set reciente

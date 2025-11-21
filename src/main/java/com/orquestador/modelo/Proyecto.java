@@ -23,12 +23,14 @@ public class Proyecto implements Serializable {
     private String documentoWordGenerado;
     private String documentoPdfGenerado;
     private boolean seleccionado = true; // Por defecto todos seleccionados
-    private String area; // Ãrea del proyecto: Clientes, Comercial, Integraciones, Siniestros, etc.
+    private String area; // Ãrea del proyecto: Clientes, Comercial, Integraciones, Siniestros, etc.
+    private boolean esProyectoManual = false; // Si es true, imagenesSeleccionadas contiene rutas absolutas
     
     public Proyecto() {
         this.imagenesSeleccionadas = new ArrayList<>();
         this.estado = "PENDIENTE";
         this.seleccionado = true;
+        this.esProyectoManual = false;
     }
     
     public Proyecto(String nombre, String rutaImagenes, String rutaTemplateWord, String rutaSalida) {
@@ -153,12 +155,21 @@ public class Proyecto implements Serializable {
         this.area = area;
     }
     
+    public boolean isEsProyectoManual() {
+        return esProyectoManual;
+    }
+    
+    public void setEsProyectoManual(boolean esProyectoManual) {
+        this.esProyectoManual = esProyectoManual;
+    }
+    
     @Override
     public String toString() {
         return "Proyecto{" +
                 "nombre='" + nombre + '\'' +
                 ", estado='" + estado + '\'' +
                 ", imagenesSeleccionadas=" + imagenesSeleccionadas.size() +
+                ", esProyectoManual=" + esProyectoManual +
                 '}';
     }
 }
