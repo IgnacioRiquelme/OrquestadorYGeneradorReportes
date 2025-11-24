@@ -3,6 +3,7 @@ package com.orquestador.ui;
 import com.orquestador.modelo.ProyectoAutomatizacion;
 import com.orquestador.modelo.ProyectoAutomatizacion.*;
 import com.orquestador.modelo.Proyecto;
+import com.orquestador.modelo.ConfiguracionInforme;
 import com.orquestador.servicio.EjecutorAutomatizaciones;
 import com.orquestador.servicio.GeneradorDocumentos;
 import com.orquestador.util.GestorConfiguracion;
@@ -577,6 +578,94 @@ public class ControladorPrincipal {
         contenido.getChildren().add(chkSeleccionar);
         contenido.getChildren().add(btnSelectorVisual);
         
+        // ===== SECCIÓN DE MÚLTIPLES INFORMES =====
+        javafx.scene.control.Separator sep2 = new javafx.scene.control.Separator();
+        Label lblInformes = new Label("📑 Configuración de Informes Múltiples (Opcional)");
+        lblInformes.setStyle("-fx-font-weight: bold; -fx-font-size: 13px; -fx-text-fill: #FF6B6B;");
+        
+        Label lblInfoInformes = new Label("Si el proyecto genera imágenes para múltiples informes, configúralos aquí.\nCada informe filtrará las imágenes según el patrón definido.");
+        lblInfoInformes.setStyle("-fx-font-size: 11px; -fx-text-fill: #666; -fx-font-style: italic;");
+        lblInfoInformes.setWrapText(true);
+        
+        VBox contenedorInformes = new VBox(10);
+        contenedorInformes.setPadding(new Insets(10));
+        contenedorInformes.setStyle("-fx-background-color: #f9f9f9; -fx-border-color: #ddd; -fx-border-radius: 5;");
+        
+        javafx.collections.ObservableList<ConfiguracionInforme> listaInformes = javafx.collections.FXCollections.observableArrayList();
+        
+        Button btnAgregarInforme = new Button("➕ Agregar Informe");
+        btnAgregarInforme.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnAgregarInforme.setOnAction(e -> {
+            VBox filaInforme = new VBox(5);
+            filaInforme.setPadding(new Insets(10));
+            filaInforme.setStyle("-fx-background-color: white; -fx-border-color: #ccc; -fx-border-radius: 3; -fx-padding: 10;");
+            
+            ConfiguracionInforme nuevoInforme = new ConfiguracionInforme();
+            listaInformes.add(nuevoInforme);
+            
+            Label lblNumInforme = new Label("Informe #" + (listaInformes.size() + 1));
+            lblNumInforme.setStyle("-fx-font-weight: bold; -fx-text-fill: #2196F3;");
+            
+            TextField txtNombreArchivo = new TextField();
+            txtNombreArchivo.setPromptText("Nombre del archivo de salida (sin extensión)");
+            txtNombreArchivo.textProperty().addListener((obs, old, val) -> nuevoInforme.setNombreArchivo(val));
+            
+            TextField txtTemplateInforme = new TextField();
+            txtTemplateInforme.setPromptText("Ruta del template Word para este informe");
+            txtTemplateInforme.textProperty().addListener((obs, old, val) -> nuevoInforme.setTemplateWord(val));
+            
+            Button btnExaminarTemplateInforme = new Button("📁");
+            btnExaminarTemplateInforme.setOnAction(ev -> {
+                javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+                chooser.setTitle("Seleccionar template Word");
+                chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+                java.io.File file = chooser.showOpenDialog(dialog.getOwner());
+                if (file != null) {
+                    txtTemplateInforme.setText(file.getAbsolutePath());
+                }
+            });
+            
+            Label lblResumenImagenes = new Label("(Sin imágenes seleccionadas)");
+            lblResumenImagenes.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+            
+            Button btnSeleccionarImagenes = new Button("🖼️ Seleccionar Imágenes");
+            btnSeleccionarImagenes.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
+            btnSeleccionarImagenes.setOnAction(ev -> {
+                String rutaImagenes = txtRutaImagenes.getText();
+                if (rutaImagenes == null || rutaImagenes.trim().isEmpty()) {
+                    mostrarAlerta("Error", "Primero debes configurar la 'Ruta de imágenes' en la sección superior", Alert.AlertType.ERROR);
+                    return;
+                }
+                
+                abrirSelectorImagenesParaInforme(rutaImagenes, nuevoInforme, lblResumenImagenes);
+            });
+            
+            Button btnEliminarInforme = new Button("🗑️ Eliminar");
+            btnEliminarInforme.setStyle("-fx-background-color: #f44336; -fx-text-fill: white;");
+            btnEliminarInforme.setOnAction(ev -> {
+                contenedorInformes.getChildren().remove(filaInforme);
+                listaInformes.remove(nuevoInforme);
+            });
+            
+            HBox hboxTemplateInforme = new HBox(10);
+            hboxTemplateInforme.getChildren().addAll(txtTemplateInforme, btnExaminarTemplateInforme);
+            HBox.setHgrow(txtTemplateInforme, Priority.ALWAYS);
+            
+            filaInforme.getChildren().addAll(
+                lblNumInforme,
+                new Label("Template Word:"),
+                hboxTemplateInforme,
+                new Label("Imágenes:"),
+                lblResumenImagenes,
+                btnSeleccionarImagenes,
+                btnEliminarInforme
+            );
+            
+            contenedorInformes.getChildren().add(filaInforme);
+        });
+        
+        contenido.getChildren().addAll(sep2, lblInformes, lblInfoInformes, btnAgregarInforme, contenedorInformes);
+        
         javafx.scene.control.ScrollPane scrollContenido = new javafx.scene.control.ScrollPane(contenido);
         scrollContenido.setFitToWidth(true);
         scrollContenido.setPrefHeight(700);
@@ -629,6 +718,11 @@ public class ControladorPrincipal {
                 // Si usó selector manual, guardar esas imágenes
                 if (chkSeleccionar.isSelected() && !imagenesSeleccionadasManualmente.isEmpty()) {
                     proyecto.setImagenesSeleccionadas(imagenesSeleccionadasManualmente);
+                }
+
+                // Guardar lista de informes configurados
+                if (!listaInformes.isEmpty()) {
+                    proyecto.setInformes(new ArrayList<>(listaInformes));
                 }
 
                 return proyecto;
@@ -951,6 +1045,180 @@ public class ControladorPrincipal {
         // Nota: el botón de "Limpiar Configuración" se muestra solo en la segunda pantalla
         // (selector visual de imágenes). Se eliminó de esta primera pantalla intencionalmente.
         
+        // ===== SECCIÓN DE MÚLTIPLES INFORMES =====
+        javafx.scene.control.Separator sep2 = new javafx.scene.control.Separator();
+        Label lblInformes = new Label("📑 Configuración de Informes Múltiples (Opcional)");
+        lblInformes.setStyle("-fx-font-weight: bold; -fx-font-size: 13px; -fx-text-fill: #FF6B6B;");
+        
+        Label lblInfoInformes = new Label("Si el proyecto genera imágenes para múltiples informes, configúralos aquí.\nCada informe filtrará las imágenes según el patrón definido.");
+        lblInfoInformes.setStyle("-fx-font-size: 11px; -fx-text-fill: #666; -fx-font-style: italic;");
+        lblInfoInformes.setWrapText(true);
+        
+        VBox contenedorInformes = new VBox(10);
+        contenedorInformes.setPadding(new Insets(10));
+        contenedorInformes.setStyle("-fx-background-color: #f9f9f9; -fx-border-color: #ddd; -fx-border-radius: 5;");
+        
+        javafx.collections.ObservableList<ConfiguracionInforme> listaInformes = javafx.collections.FXCollections.observableArrayList();
+        
+        // Cargar informes existentes
+        if (seleccionado.getInformes() != null && !seleccionado.getInformes().isEmpty()) {
+            listaInformes.addAll(seleccionado.getInformes());
+        }
+        
+        Button btnAgregarInforme = new Button("➕ Agregar Informe");
+        btnAgregarInforme.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnAgregarInforme.setOnAction(e -> {
+            VBox filaInforme = new VBox(5);
+            filaInforme.setPadding(new Insets(10));
+            filaInforme.setStyle("-fx-background-color: white; -fx-border-color: #ccc; -fx-border-radius: 3; -fx-padding: 10;");
+            
+            ConfiguracionInforme nuevoInforme = new ConfiguracionInforme();
+            listaInformes.add(nuevoInforme);
+            
+            Label lblNumInforme = new Label("Informe #" + (listaInformes.size() + 1));
+            lblNumInforme.setStyle("-fx-font-weight: bold; -fx-text-fill: #2196F3;");
+            
+            TextField txtNombreArchivoEdit = new TextField();
+            txtNombreArchivoEdit.setPromptText("Nombre del archivo de salida (sin extensión)");
+            txtNombreArchivoEdit.textProperty().addListener((obs, old, val) -> nuevoInforme.setNombreArchivo(val));
+            
+            TextField txtTemplateInforme = new TextField();
+            txtTemplateInforme.setPromptText("Ruta del template Word para este informe");
+            txtTemplateInforme.textProperty().addListener((obs, old, val) -> nuevoInforme.setTemplateWord(val));
+            
+            Button btnExaminarTemplateInforme = new Button("📁");
+            btnExaminarTemplateInforme.setOnAction(ev -> {
+                javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+                chooser.setTitle("Seleccionar template Word");
+                chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+                java.io.File file = chooser.showOpenDialog(dialog.getOwner());
+                if (file != null) {
+                    txtTemplateInforme.setText(file.getAbsolutePath());
+                }
+            });
+            
+            Label lblResumenImagenes = new Label("(Sin imágenes seleccionadas)");
+            lblResumenImagenes.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+            
+            Button btnSeleccionarImagenes = new Button("🖼️ Seleccionar Imágenes");
+            btnSeleccionarImagenes.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
+            btnSeleccionarImagenes.setOnAction(ev -> {
+                String rutaImagenes = txtRutaImagenes.getText();
+                if (rutaImagenes == null || rutaImagenes.trim().isEmpty()) {
+                    mostrarAlerta("Error", "Primero debes configurar la 'Ruta de imágenes' en la sección superior", Alert.AlertType.ERROR);
+                    return;
+                }
+                
+                abrirSelectorImagenesParaInforme(rutaImagenes, nuevoInforme, lblResumenImagenes);
+            });
+            
+            Button btnEliminarInforme = new Button("🗑️ Eliminar");
+            btnEliminarInforme.setStyle("-fx-background-color: #f44336; -fx-text-fill: white;");
+            btnEliminarInforme.setOnAction(ev -> {
+                contenedorInformes.getChildren().remove(filaInforme);
+                listaInformes.remove(nuevoInforme);
+            });
+            
+            HBox hboxTemplateInforme = new HBox(10);
+            hboxTemplateInforme.getChildren().addAll(txtTemplateInforme, btnExaminarTemplateInforme);
+            HBox.setHgrow(txtTemplateInforme, Priority.ALWAYS);
+            
+            filaInforme.getChildren().addAll(
+                lblNumInforme,
+                new Label("Nombre del archivo:"),
+                txtNombreArchivoEdit,
+                new Label("Template Word:"),
+                hboxTemplateInforme,
+                new Label("Imágenes:"),
+                lblResumenImagenes,
+                btnSeleccionarImagenes,
+                btnEliminarInforme
+            );
+            
+            contenedorInformes.getChildren().add(filaInforme);
+        });
+        
+        // Cargar informes existentes en la UI
+        for (int i = 0; i < listaInformes.size(); i++) {
+            ConfiguracionInforme informeExistente = listaInformes.get(i);
+            
+            VBox filaInforme = new VBox(5);
+            filaInforme.setPadding(new Insets(10));
+            filaInforme.setStyle("-fx-background-color: white; -fx-border-color: #ccc; -fx-border-radius: 3; -fx-padding: 10;");
+            
+            Label lblNumInforme = new Label("Informe #" + (i + 2));
+            lblNumInforme.setStyle("-fx-font-weight: bold; -fx-text-fill: #2196F3;");
+            
+            TextField txtNombreArchivo = new TextField(informeExistente.getNombreArchivo());
+            txtNombreArchivo.setPromptText("Nombre del archivo de salida (sin extensión)");
+            txtNombreArchivo.textProperty().addListener((obs, old, val) -> informeExistente.setNombreArchivo(val));
+            
+            TextField txtTemplateInforme = new TextField(informeExistente.getTemplateWord());
+            txtTemplateInforme.setPromptText("Ruta del template Word para este informe");
+            txtTemplateInforme.textProperty().addListener((obs, old, val) -> informeExistente.setTemplateWord(val));
+            
+            Button btnExaminarTemplateInforme = new Button("📁");
+            btnExaminarTemplateInforme.setOnAction(ev -> {
+                javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+                chooser.setTitle("Seleccionar template Word");
+                chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+                java.io.File file = chooser.showOpenDialog(dialog.getOwner());
+                if (file != null) {
+                    txtTemplateInforme.setText(file.getAbsolutePath());
+                }
+            });
+            
+            Label lblResumenImagenes = new Label(
+                informeExistente.getImagenesSeleccionadas() != null && !informeExistente.getImagenesSeleccionadas().isEmpty()
+                    ? informeExistente.getImagenesSeleccionadas().size() + " imagen(es) | Patrón: " + informeExistente.getPatronImagenes()
+                    : "(Sin imágenes seleccionadas)"
+            );
+            lblResumenImagenes.setStyle(
+                informeExistente.getImagenesSeleccionadas() != null && !informeExistente.getImagenesSeleccionadas().isEmpty()
+                    ? "-fx-font-size: 11px; -fx-text-fill: #4CAF50; -fx-font-weight: bold;"
+                    : "-fx-font-size: 11px; -fx-text-fill: #666;"
+            );
+            
+            Button btnSeleccionarImagenes = new Button("🖼️ Seleccionar Imágenes");
+            btnSeleccionarImagenes.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
+            btnSeleccionarImagenes.setOnAction(ev -> {
+                String rutaImagenes = txtRutaImagenes.getText();
+                if (rutaImagenes == null || rutaImagenes.trim().isEmpty()) {
+                    mostrarAlerta("Error", "Primero debes configurar la 'Ruta de imágenes' en la sección superior", Alert.AlertType.ERROR);
+                    return;
+                }
+                
+                abrirSelectorImagenesParaInforme(rutaImagenes, informeExistente, lblResumenImagenes);
+            });
+            
+            Button btnEliminarInforme = new Button("🗑️ Eliminar");
+            btnEliminarInforme.setStyle("-fx-background-color: #f44336; -fx-text-fill: white;");
+            btnEliminarInforme.setOnAction(ev -> {
+                contenedorInformes.getChildren().remove(filaInforme);
+                listaInformes.remove(informeExistente);
+            });
+            
+            HBox hboxTemplateInforme = new HBox(10);
+            hboxTemplateInforme.getChildren().addAll(txtTemplateInforme, btnExaminarTemplateInforme);
+            HBox.setHgrow(txtTemplateInforme, Priority.ALWAYS);
+            
+            filaInforme.getChildren().addAll(
+                lblNumInforme,
+                new Label("Nombre del archivo:"),
+                txtNombreArchivo,
+                new Label("Template Word:"),
+                hboxTemplateInforme,
+                new Label("Imágenes:"),
+                lblResumenImagenes,
+                btnSeleccionarImagenes,
+                btnEliminarInforme
+            );
+            
+            contenedorInformes.getChildren().add(filaInforme);
+        }
+        
+        contenido.getChildren().addAll(sep2, lblInformes, lblInfoInformes, btnAgregarInforme, contenedorInformes);
+        
         javafx.scene.control.ScrollPane scrollContenido = new javafx.scene.control.ScrollPane(contenido);
         scrollContenido.setFitToWidth(true);
         scrollContenido.setPrefHeight(700);
@@ -1016,6 +1284,12 @@ public class ControladorPrincipal {
                     seleccionado.setImagenesSeleccionadas(patronesGuardar);
                 }
                 
+                // Guardar lista de informes configurados
+                if (!listaInformes.isEmpty()) {
+                    seleccionado.setInformes(new ArrayList<>(listaInformes));
+                } else {
+                    seleccionado.setInformes(new ArrayList<>());
+                }
                 
                 return seleccionado;
             }
@@ -1024,8 +1298,8 @@ public class ControladorPrincipal {
         
         Optional<ProyectoAutomatizacion> resultado = dialog.showAndWait();
         resultado.ifPresent(proyecto -> {
-            tablaProyectos.refresh();
             guardarProyectos();
+            tablaProyectos.refresh();
             agregarLog("✏️ Proyecto editado: " + proyecto.getNombre());
         });
     }
@@ -1761,18 +2035,24 @@ public class ControladorPrincipal {
         agregarLog("Proyectos seleccionados: " + seleccionados.size());
         
         new Thread(() -> {
-            int exitosos = 0;
-            int fallidos = 0;
+            int informesExitosos = 0;
+            int informesFallidos = 0;
+            int proyectosExitosos = 0;
+            int proyectosFallidos = 0;
             StringBuilder errores = new StringBuilder();
             
             for (ProyectoAutomatizacion proyAuto : seleccionados) {
+                // Calcular cuántos informes tiene este proyecto (principal + adicionales)
+                final int totalInformesProyecto = 1 + (proyAuto.getInformes() != null ? proyAuto.getInformes().size() : 0);
+                
                 try {
-                    Platform.runLater(() -> agregarLog("Procesando: " + proyAuto.getNombre()));
+                    Platform.runLater(() -> agregarLog("Procesando: " + proyAuto.getNombre() + " (" + totalInformesProyecto + " informe" + (totalInformesProyecto > 1 ? "s" : "") + ")"));
                     
                     // Validar que tenga configuracion minima
                     if (proyAuto.getRutaTemplateWord() == null || proyAuto.getRutaTemplateWord().isEmpty()) {
                         Platform.runLater(() -> agregarLog("  ERROR: Sin template Word configurado"));
-                        fallidos++;
+                        proyectosFallidos++;
+                        informesFallidos += totalInformesProyecto;
                         errores.append("- ").append(proyAuto.getNombre()).append(": Sin template Word\n");
                         continue;
                     }
@@ -1780,6 +2060,13 @@ public class ControladorPrincipal {
                     // Crear proyecto del generador con TODAS las configuraciones
                     Proyecto proyecto = new Proyecto();
                     proyecto.setNombre(proyAuto.getNombre());
+                    
+                    // COPIAR LOS INFORMES DEL ProyectoAutomatizacion al Proyecto
+                    if (proyAuto.getInformes() != null && !proyAuto.getInformes().isEmpty()) {
+                        List<com.orquestador.modelo.ConfiguracionInforme> copiaInformes = new ArrayList<>(proyAuto.getInformes());
+                        proyecto.setInformes(copiaInformes);
+                        Platform.runLater(() -> agregarLog("  Informes configurados: " + copiaInformes.size()));
+                    }
                     
                     // USAR EL FLAG DE PROYECTO MANUAL (o detectar si no está configurado)
                     boolean esManual = proyAuto.isEsProyectoManual() || 
@@ -1834,60 +2121,95 @@ public class ControladorPrincipal {
                     }
                     proyecto.setImagenesSeleccionadas(patrones);
                     
-                    // Generar usando el GeneradorDocumentos original (mantiene TODAS las funcionalidades)
+                    // Generar usando el GeneradorDocumentos
                     GeneradorDocumentos generador = new GeneradorDocumentos(proyecto);
-                    boolean exito = generador.generar();
+                    
+                    // Forzar generación múltiple si proyAuto tiene informes adicionales
+                    boolean tieneInformesAdicionales = (proyAuto.getInformes() != null && !proyAuto.getInformes().isEmpty());
+                    boolean exito;
+                    
+                    if (tieneInformesAdicionales) {
+                        // Asegurar que proyecto tenga los informes
+                        if (proyecto.getInformes() == null || proyecto.getInformes().isEmpty()) {
+                            proyecto.setInformes(new ArrayList<>(proyAuto.getInformes()));
+                        }
+                        Platform.runLater(() -> agregarLog("  Usando generador MÚLTIPLE (" + proyecto.getInformes().size() + " adicionales)"));
+                        exito = generador.generar(); // Esto debería llamar a generarMultiplesInformes()
+                    } else {
+                        Platform.runLater(() -> agregarLog("  Usando generador SIMPLE (1 informe)"));
+                        exito = generador.generar();
+                    }
                     
                     if (exito) {
-                        exitosos++;
+                        proyectosExitosos++;
                         proyAuto.setReporteGenerado(true); // Marcar como generado
                         final String docWord = proyecto.getDocumentoWordGenerado();
                         final String docPdf = proyecto.getDocumentoPdfGenerado();
+                        
+                        // Contar cuántos informes se generaron (por los PDFs separados por ;)
+                        final int cantidadInformes = docPdf != null ? docPdf.split(";").length : 1;
+                        informesExitosos += cantidadInformes;
+                        
                         Platform.runLater(() -> {
-                            agregarLog("  Exitoso!");
-                            agregarLog("    Word: " + docWord);
-                            agregarLog("    PDF: " + docPdf);
+                            agregarLog("  ✅ " + cantidadInformes + " informe" + (cantidadInformes > 1 ? "s generados" : " generado") + " exitosamente");
+                            // Mostrar cada PDF generado
+                            if (docPdf != null && docPdf.contains(";")) {
+                                String[] pdfs = docPdf.split(";");
+                                for (int i = 0; i < pdfs.length; i++) {
+                                    String pdfPath = pdfs[i].trim();
+                                    String nombrePdf = new java.io.File(pdfPath).getName();
+                                    agregarLog("    [" + (i + 1) + "] " + nombrePdf);
+                                }
+                            } else if (docPdf != null) {
+                                String nombrePdf = new java.io.File(docPdf).getName();
+                                agregarLog("    PDF: " + nombrePdf);
+                            }
                             tablaProyectos.refresh(); // Actualizar tabla para mostrar ✅
                         });
                     } else {
-                        fallidos++;
+                        proyectosFallidos++;
+                        informesFallidos += totalInformesProyecto;
                         proyAuto.setReporteGenerado(false); // Marcar como fallido
                         final String error = proyecto.getMensajeError();
                         errores.append("- ").append(proyAuto.getNombre()).append(": ").append(error).append("\n");
                         Platform.runLater(() -> {
-                            agregarLog("  Error: " + error);
+                            agregarLog("  ❌ Error: " + error);
                             tablaProyectos.refresh();
                         });
                     }
                     
                 } catch (Exception e) {
-                    fallidos++;
+                    proyectosFallidos++;
+                    informesFallidos += totalInformesProyecto;
                     String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                     errores.append("- ").append(proyAuto.getNombre()).append(": ").append(errorMsg).append("\n");
-                    Platform.runLater(() -> agregarLog("  Error inesperado: " + errorMsg));
+                    Platform.runLater(() -> agregarLog("  ❌ Error inesperado: " + errorMsg));
                 }
             }
             
-            final int totalExitosos = exitosos;
-            final int totalFallidos = fallidos;
+            final int totalInformesExitosos = informesExitosos;
+            final int totalInformesFallidos = informesFallidos;
+            final int totalProyectosExitosos = proyectosExitosos;
+            final int totalProyectosFallidos = proyectosFallidos;
             final String mensajeErrores = errores.toString();
             
             Platform.runLater(() -> {
                 agregarLog("=== GENERACION COMPLETADA ===");
-                agregarLog("Exitosos: " + totalExitosos);
-                agregarLog("Fallidos: " + totalFallidos);
+                agregarLog("Informes generados: " + totalInformesExitosos);
+                agregarLog("Informes fallidos: " + totalInformesFallidos);
+                agregarLog("Proyectos procesados: " + totalProyectosExitosos + " exitosos, " + totalProyectosFallidos + " fallidos");
                 
                 // Guardar estado actualizado de los proyectos
                 guardarProyectos();
                 
-                String mensaje = String.format("Generacion de informes completada:\n\nExitosos: %d\nFallidos: %d",
-                    totalExitosos, totalFallidos);
-                if (totalFallidos > 0) {
+                String mensaje = String.format("Generacion de informes completada:\n\nInformes generados: %d\nInformes fallidos: %d\n\nProyectos procesados: %d exitosos, %d fallidos",
+                    totalInformesExitosos, totalInformesFallidos, totalProyectosExitosos, totalProyectosFallidos);
+                if (totalInformesFallidos > 0 || totalProyectosFallidos > 0) {
                     mensaje += "\n\nErrores:\n" + mensajeErrores;
                 }
                 
                 mostrarAlerta("Informes Generados", mensaje, 
-                    totalFallidos == 0 ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING);
+                    (totalInformesFallidos == 0 && totalProyectosFallidos == 0) ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING);
             });
         }).start();
     }
@@ -2375,6 +2697,255 @@ public class ControladorPrincipal {
                 }
             }
         }
+    }
+    
+    /**
+     * Abre selector de imágenes para un informe específico
+     * Muestra diálogo idéntico al del informe principal, con selección múltiple
+     */
+    private void abrirSelectorImagenesParaInforme(String rutaCarpeta, ConfiguracionInforme informe, Label lblResumen) {
+        List<String> imagenesSeleccionadasInforme = abrirDialogoSeleccionImagenesMultiples(rutaCarpeta, informe.getPatronImagenes());
+        
+        if (imagenesSeleccionadasInforme != null && !imagenesSeleccionadasInforme.isEmpty()) {
+            // Extraer patrón de la primera imagen si no existe
+            if (informe.getPatronImagenes() == null || informe.getPatronImagenes().isEmpty()) {
+                String primeraImagen = new java.io.File(imagenesSeleccionadasInforme.get(0)).getName();
+                String patron = extraerPatronDeImagen(primeraImagen);
+                informe.setPatronImagenes(patron);
+            }
+            
+            // Guardar las imágenes seleccionadas
+            informe.setImagenesSeleccionadas(imagenesSeleccionadasInforme);
+            
+            // Actualizar label de resumen
+            lblResumen.setText(imagenesSeleccionadasInforme.size() + " imagen(es) | Patrón: " + informe.getPatronImagenes());
+            lblResumen.setStyle("-fx-font-size: 11px; -fx-text-fill: #4CAF50; -fx-font-weight: bold;");
+        }
+    }
+    
+    /**
+     * Abre diálogo de selección múltiple de imágenes con filtro por patrón opcional
+     */
+    private List<String> abrirDialogoSeleccionImagenesMultiples(String rutaCarpeta, String patronFiltro) {
+        Dialog<List<String>> dialog = new Dialog<>();
+        dialog.setTitle("Seleccionar Imágenes para el Informe");
+        dialog.setHeaderText("📁 Selecciona las imágenes en el orden que aparecerán en el informe");
+        
+        ButtonType btnGuardar = new ButtonType("Aceptar", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+        
+        VBox contenido = new VBox(15);
+        contenido.setPadding(new Insets(20));
+        contenido.setMinWidth(900);
+        contenido.setMaxWidth(1200);
+        
+        Label lblInfo = new Label("📋 Selecciona las imágenes en el orden que desees");
+        lblInfo.setStyle("-fx-font-size: 12px; -fx-text-fill: #555; -fx-font-weight: bold;");
+        
+        // Lista de imágenes seleccionadas
+        Label lblSeleccionadas = new Label("✅ Imágenes seleccionadas (en orden):");
+        lblSeleccionadas.setStyle("-fx-font-weight: bold;");
+        
+        javafx.scene.control.ListView<String> listViewSeleccionadas = new javafx.scene.control.ListView<>();
+        listViewSeleccionadas.setPrefHeight(150);
+        
+        javafx.collections.ObservableList<String> imagenesOrdenadas = javafx.collections.FXCollections.observableArrayList();
+        listViewSeleccionadas.setItems(imagenesOrdenadas);
+        
+        listViewSeleccionadas.setCellFactory(lv -> new javafx.scene.control.ListCell<String>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(new java.io.File(item).getName());
+                }
+            }
+        });
+        
+        Button btnQuitar = new Button("➖ Quitar de la Lista");
+        btnQuitar.setStyle("-fx-background-color: #FF9800; -fx-text-fill: white;");
+        btnQuitar.setOnAction(e -> {
+            String seleccionada = listViewSeleccionadas.getSelectionModel().getSelectedItem();
+            if (seleccionada != null) {
+                imagenesOrdenadas.remove(seleccionada);
+            }
+        });
+        
+        Button btnLimpiar = new Button("🗑️ Limpiar Configuración");
+        btnLimpiar.setStyle("-fx-background-color: #f44336; -fx-text-fill: white;");
+        btnLimpiar.setOnAction(e -> imagenesOrdenadas.clear());
+        
+        HBox hboxBotones = new HBox(10, btnQuitar, btnLimpiar);
+        
+        Label lblCount = new Label("Total: 0 imágenes");
+        lblCount.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+        imagenesOrdenadas.addListener((javafx.collections.ListChangeListener<String>) c -> {
+            lblCount.setText("Total: " + imagenesOrdenadas.size() + " imágenes");
+        });
+        
+        // Imágenes disponibles
+        Label lblDisponibles = new Label("🖼️ Imágenes disponibles" + (patronFiltro != null && !patronFiltro.isEmpty() ? " (filtro: " + patronFiltro + ")" : "") + ":");
+        lblDisponibles.setStyle("-fx-font-weight: bold;");
+        
+        javafx.scene.layout.FlowPane flowPane = new javafx.scene.layout.FlowPane();
+        flowPane.setHgap(10);
+        flowPane.setVgap(10);
+        flowPane.setStyle("-fx-background-color: #f5f5f5; -fx-padding: 10;");
+        flowPane.setPrefWrapLength(850);
+        
+        javafx.scene.control.ScrollPane scrollPane = new javafx.scene.control.ScrollPane(flowPane);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setPrefHeight(400);
+        
+        // Cargar imágenes de la carpeta
+        java.io.File carpeta = new java.io.File(rutaCarpeta);
+        if (carpeta.exists() && carpeta.isDirectory()) {
+            java.io.File[] archivos = carpeta.listFiles();
+            if (archivos != null) {
+                java.util.Arrays.sort(archivos, (a, b) -> a.getName().compareTo(b.getName()));
+                
+                for (java.io.File archivo : archivos) {
+                    String nombre = archivo.getName();
+                    String nombreLower = nombre.toLowerCase();
+                    
+                    // Filtrar por patrón si existe
+                    if (patronFiltro != null && !patronFiltro.isEmpty() && !nombre.startsWith(patronFiltro)) {
+                        continue;
+                    }
+                    
+                    if (nombreLower.endsWith(".png") || nombreLower.endsWith(".jpg") || nombreLower.endsWith(".jpeg")) {
+                        VBox vbox = crearTarjetaImagen(archivo, imagenesOrdenadas);
+                        flowPane.getChildren().add(vbox);
+                    }
+                }
+            }
+        }
+        
+        contenido.getChildren().addAll(
+            lblInfo,
+            new Separator(),
+            lblSeleccionadas,
+            listViewSeleccionadas,
+            lblCount,
+            hboxBotones,
+            new Separator(),
+            lblDisponibles,
+            scrollPane
+        );
+        
+        dialog.getDialogPane().setContent(contenido);
+        
+        dialog.setResultConverter(dialogButton -> {
+            if (dialogButton == btnGuardar) {
+                return new java.util.ArrayList<>(imagenesOrdenadas);
+            }
+            return null;
+        });
+        
+        return dialog.showAndWait().orElse(null);
+    }
+    
+    /**
+     * Crea tarjeta visual para una imagen con miniatura y botón de agregar
+     */
+    private VBox crearTarjetaImagen(java.io.File archivo, javafx.collections.ObservableList<String> imagenesOrdenadas) {
+        VBox vbox = new VBox(5);
+        vbox.setAlignment(javafx.geometry.Pos.CENTER);
+        vbox.setStyle("-fx-background-color: white; -fx-border-color: #ddd; -fx-border-radius: 5; -fx-padding: 10;");
+        vbox.setPrefWidth(180);
+        vbox.setUserData(archivo.getAbsolutePath());
+        
+        // Miniatura
+        javafx.scene.image.ImageView imageView = new javafx.scene.image.ImageView();
+        imageView.setFitWidth(160);
+        imageView.setFitHeight(120);
+        imageView.setPreserveRatio(true);
+        
+        try {
+            javafx.scene.image.Image img = new javafx.scene.image.Image(archivo.toURI().toString(), 160, 120, true, true);
+            imageView.setImage(img);
+        } catch (Exception e) {
+            imageView.setImage(null);
+        }
+        
+        // Nombre del archivo
+        Label lblNombre = new Label(archivo.getName());
+        lblNombre.setStyle("-fx-font-size: 10px; -fx-text-fill: #333;");
+        lblNombre.setWrapText(true);
+        lblNombre.setMaxWidth(160);
+        lblNombre.setTextAlignment(javafx.scene.text.TextAlignment.CENTER);
+        
+        // Botón agregar
+        Button btnAgregar = new Button("➕ Agregar como #1");
+        btnAgregar.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnAgregar.setMaxWidth(Double.MAX_VALUE);
+        
+        btnAgregar.setOnAction(e -> {
+            String rutaCompleta = archivo.getAbsolutePath();
+            if (!imagenesOrdenadas.contains(rutaCompleta)) {
+                imagenesOrdenadas.add(rutaCompleta);
+                btnAgregar.setDisable(true);
+                btnAgregar.setText("✓ Seleccionada");
+                btnAgregar.setStyle("-fx-background-color: #999; -fx-text-fill: white;");
+            }
+        });
+        
+        // Actualizar estado inicial
+        if (imagenesOrdenadas.contains(archivo.getAbsolutePath())) {
+            btnAgregar.setDisable(true);
+            btnAgregar.setText("✓ Seleccionada");
+            btnAgregar.setStyle("-fx-background-color: #999; -fx-text-fill: white;");
+        } else {
+            btnAgregar.setText("➕ Agregar como #" + (imagenesOrdenadas.size() + 1));
+        }
+        
+        // Listener para actualizar botones cuando cambia la lista
+        imagenesOrdenadas.addListener((javafx.collections.ListChangeListener<String>) c -> {
+            if (imagenesOrdenadas.contains(archivo.getAbsolutePath())) {
+                btnAgregar.setDisable(true);
+                btnAgregar.setText("✓ Seleccionada");
+                btnAgregar.setStyle("-fx-background-color: #999; -fx-text-fill: white;");
+            } else {
+                btnAgregar.setDisable(false);
+                btnAgregar.setText("➕ Agregar como #" + (imagenesOrdenadas.size() + 1));
+                btnAgregar.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+            }
+        });
+        
+        vbox.getChildren().addAll(imageView, lblNombre, btnAgregar);
+        return vbox;
+    }
+    
+    /**
+     * Extrae el patrón de una imagen hasta el último guión bajo antes del timestamp
+     * Ejemplo: "t0001_auxilia_bci_20251024_082931.png" → "t0001_auxilia_bci_"
+     */
+    private String extraerPatronDeImagen(String nombreArchivo) {
+        // Eliminar extensión
+        int ultimoPunto = nombreArchivo.lastIndexOf('.');
+        String nombreSinExtension = ultimoPunto > 0 ? nombreArchivo.substring(0, ultimoPunto) : nombreArchivo;
+        
+        // Buscar el último guión bajo (antes del timestamp)
+        int ultimoGuion = nombreSinExtension.lastIndexOf('_');
+        if (ultimoGuion > 0) {
+            // Verificar si después del guión bajo hay números (timestamp)
+            String despuesGuion = nombreSinExtension.substring(ultimoGuion + 1);
+            if (despuesGuion.matches("\\d+")) {
+                // Es un timestamp numérico, buscar el guión bajo anterior
+                String antesTimestamp = nombreSinExtension.substring(0, ultimoGuion);
+                int penultimoGuion = antesTimestamp.lastIndexOf('_');
+                if (penultimoGuion > 0) {
+                    return nombreSinExtension.substring(0, penultimoGuion + 1);
+                }
+            }
+            // Si no es timestamp, incluir hasta este guión bajo
+            return nombreSinExtension.substring(0, ultimoGuion + 1);
+        }
+        
+        // Si no hay guión bajo, devolver nombre completo con guión bajo al final
+        return nombreSinExtension + "_";
     }
     
     public Parent getRoot() {

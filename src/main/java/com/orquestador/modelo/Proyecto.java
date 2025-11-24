@@ -25,9 +25,11 @@ public class Proyecto implements Serializable {
     private boolean seleccionado = true; // Por defecto todos seleccionados
     private String area; // Ãrea del proyecto: Clientes, Comercial, Integraciones, Siniestros, etc.
     private boolean esProyectoManual = false; // Si es true, imagenesSeleccionadas contiene rutas absolutas
+    private List<ConfiguracionInforme> informes; // Lista de informes a generar (soporta múltiples informes)
     
     public Proyecto() {
         this.imagenesSeleccionadas = new ArrayList<>();
+        this.informes = null; // NO inicializar como lista vacía - se establece después si hay informes
         this.estado = "PENDIENTE";
         this.seleccionado = true;
         this.esProyectoManual = false;
@@ -163,6 +165,17 @@ public class Proyecto implements Serializable {
         this.esProyectoManual = esProyectoManual;
     }
     
+    public List<ConfiguracionInforme> getInformes() {
+        if (informes == null) {
+            informes = new ArrayList<>();
+        }
+        return informes;
+    }
+    
+    public void setInformes(List<ConfiguracionInforme> informes) {
+        this.informes = informes;
+    }
+    
     @Override
     public String toString() {
         return "Proyecto{" +
@@ -170,6 +183,7 @@ public class Proyecto implements Serializable {
                 ", estado='" + estado + '\'' +
                 ", imagenesSeleccionadas=" + imagenesSeleccionadas.size() +
                 ", esProyectoManual=" + esProyectoManual +
+                ", informes=" + (informes != null ? informes.size() : 0) +
                 '}';
     }
 }

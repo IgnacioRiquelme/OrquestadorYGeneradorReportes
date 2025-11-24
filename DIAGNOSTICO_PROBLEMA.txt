@@ -1,0 +1,153 @@
+DIAGNÓSTICO DEL PROBLEMA - GENERACIÓN DE MÚLTIPLES INFORMES
+================================================================
+
+FECHA: 24 de noviembre de 2025
+
+PROBLEMA ACTUAL:
+- El sistema genera solo 1 PDF cuando debería generar 2 (principal + adicional)
+- El log muestra: "Procesando: 29- API denuncio Auxilia (BCIS) (2 informes)"
+- El log muestra: "Usando generador MÚLTIPLE (1 adicionales)"
+- Pero solo genera: "✅ 1 informe generado exitosamente"
+
+CONFIGURACIÓN DEL PROYECTO (desde JSON):
+=========================================
+Proyecto: "29- API denuncio Auxilia (BCIS)"
+
+INFORME PRINCIPAL:
+- Template: C:\Users\IARC\Desktop\Nuevos esqueletos\Manual validación API denuncio Auxilia (BCIS).docx
+- Imágenes seleccionadas manualmente: ["t0001_auxilia_bci_"]
+- Carpeta imágenes: C:\Automatizaciones_V2\SINIESTROS\BCI_Seguros_Auxilia_BCI_Zenit_V2\BCI_Seguros_Auxilia_BCI_Zenit_V2\auxilia\test-output\capturaPantalla
+
+INFORME ADICIONAL #2:
+- Nombre archivo: "30- API denuncio Auxilia (Zenit)"
+- Template: C:\Users\IARC\Desktop\Nuevos esqueletos\Manual validación API denuncio Auxilia (Zenit).docx
+- Patrón imágenes: "t0002_auxilia_Zenit_"
+- Imágenes seleccionadas: ["C:\\Automatizaciones_V2\\SINIESTROS\\BCI_Seguros_Auxilia_BCI_Zenit_V2\\BCI_Seguros_Auxilia_BCI_Zenit_V2\\auxilia\\test-output\\capturaPantalla\\t0002_auxilia_Zenit_20251124_115944.png"]
+
+CARPETA DE IMÁGENES (confirmado que existe):
+- Ruta: C:\Automatizaciones_V2\SINIESTROS\BCI_Seguros_Auxilia_BCI_Zenit_V2\BCI_Seguros_Auxilia_BCI_Zenit_V2\auxilia\test-output\capturaPantalla
+- Contiene imágenes con patrón: t0001_auxilia_bci_* y t0002_auxilia_Zenit_*
+
+HISTORIAL DE LO QUE FUNCIONÓ:
+==============================
+Phase 14 (esta mañana): SUCCESS - generó 2 informes correctamente usando patrones
+
+CAMBIOS QUE ROMPIERON EL CÓDIGO:
+=================================
+Phase 17-22: Se modificó el formato de nombres de archivos
+- ANTES: nombreArchivo + "_" + nombreTemplate + "_" + timestamp
+- DESPUÉS: Solo nombreArchivo (si existe) o solo nombreProyecto (sin template)
+- Este cambio no debería afectar la generación, solo el nombre final
+
+CÓDIGO CLAVE:
+=============
+
+1. VERIFICACIÓN EN generar() (GeneradorDocumentos.java línea 40):
+   if (proyecto.getInformes() != null && !proyecto.getInformes().isEmpty()) {
+       return generarMultiplesInformes();
+   }
+
+2. COPIA DE INFORMES (ControladorPrincipal.java línea 2065):
+   if (proyAuto.getInformes() != null && !proyAuto.getInformes().isEmpty()) {
+       List<ConfiguracionInforme> copiaInformes = new ArrayList<>(proyAuto.getInformes());
+       proyecto.setInformes(copiaInformes);
+   }
+
+3. LOOP DE INFORMES ADICIONALES (GeneradorDocumentos.java línea 697):
+   for (int i = 0; i < proyecto.getInformes().size(); i++) {
+       ConfiguracionInforme informe = proyecto.getInformes().get(i);
+       
+       // Buscar imágenes por patrón o selección manual
+       if (informe.getImagenesSeleccionadas() != null && !informe.getImagenesSeleccionadas().isEmpty()) {
+           // Usar imágenes seleccionadas
+       } else if (informe.getPatronImagenes() != null && !informe.getPatronImagenes().trim().isEmpty()) {
+           imagenesInforme = buscarImagenesPorPatron(informe.getPatronImagenes());
+       } else {
+           continue; // SKIP si no hay ni imágenes ni patrón
+       }
+       
+       if (imagenesInforme.isEmpty()) {
+           continue; // SKIP si no se encontraron imágenes
+       }
+       
+       // Generar informe
+       generarInformeIndividual(informe, imagenesInforme, i + 2, ...);
+   }
+
+PROBLEMA IDENTIFICADO:
+======================
+El getter getInformes() en ProyectoAutomatizacion.java (línea 248) estaba inicializando 
+automáticamente una lista vacía cuando era null:
+
+    public List<ConfiguracionInforme> getInformes() {
+        if (informes == null) {
+            informes = new ArrayList<>();  // <-- PROBLEMA
+        }
+        return informes;
+    }
+
+Esto hacía que cuando Gson cargaba el JSON con informes, cualquier llamada prematura 
+a getInformes() devolviera una lista vacía nueva en lugar de esperar la deserialización.
+
+SOLUCIÓN APLICADA:
+==================
+Se cambió el getter para que devuelva null si no hay informes:
+
+    public List<ConfiguracionInforme> getInformes() {
+        return informes;
+    }
+
+También se cambió el constructor de Proyecto.java para inicializar informes como null 
+en lugar de new ArrayList<>().
+
+ESTADO ACTUAL:
+==============
+- El log muestra "Informes configurados: 1" ✓
+- El log muestra "Usando generador MÚLTIPLE (1 adicionales)" ✓
+- Entra al método generarMultiplesInformes() ✓
+- Pero solo genera 1 PDF en lugar de 2 ✗
+
+ANÁLISIS DEL MÉTODO extraerPatronDeImagen():
+============================================
+
+El método extraerPatronDeImagen() en GestorImagenes.java es GENÉRICO y funciona 
+para CUALQUIER patrón de archivo.
+
+Lógica del método:
+------------------
+1. Elimina la extensión del archivo (.png, .jpg, etc.)
+2. Busca el último guión bajo (_) en el nombre
+3. Verifica si después del guión hay solo números (timestamp como 20251021 o 133745)
+4. Si es timestamp numérico → busca el guión bajo anterior y corta ahí (incluye el guión)
+5. Si NO es timestamp → usa ese guión bajo como punto de corte
+6. Siempre incluye el guión bajo final en el patrón resultante
+
+Ejemplos de funcionamiento verificados:
+----------------------------------------
+Archivo                                  →  Patrón extraído
+----------------------------------------------------
+t0001_auxilia_bci_20251024_082931.png   →  t0001_auxilia_bci_
+t0002_auxilia_Zenit_20251024_082931.png →  t0002_auxilia_Zenit_
+10_Tipo_Daño_20251021_133838.png        →  10_Tipo_Daño_
+19_Involucrados_20251021_133920.png     →  19_Involucrados_
+0_Inicio_Denuncio_20251021_133745.png   →  0_Inicio_Denuncio_
+t0002_auxilia_Zenit_TICKET456.png       →  t0002_auxilia_Zenit_ (TICKET456 no es solo números)
+
+✅ CONCLUSIÓN: La lógica de extracción de patrones es completamente flexible 
+   y funciona correctamente para cualquier nombre de archivo.
+
+PRÓXIMOS PASOS PARA DEBUGGING:
+===============================
+1. Verificar si buscarImagenesPorPatron("t0002_auxilia_Zenit_") devuelve imágenes
+2. Verificar si el archivo de imagen seleccionada existe (ruta del JSON puede ser antigua)
+3. Agregar logs en el loop de informes adicionales para ver:
+   - Si entra al loop (debería iterar 1 vez)
+   - Si encuentra imágenes por patrón o selección
+   - Si imagenesInforme.isEmpty() devuelve true
+   - Si generarInformeIndividual() se llama
+   - Si generarInformeIndividual() devuelve true o false
+
+NOTA IMPORTANTE:
+================
+Los informes adicionales SIEMPRE usan patrones para buscar imágenes.
+La selección manual es SOLO para el informe principal.

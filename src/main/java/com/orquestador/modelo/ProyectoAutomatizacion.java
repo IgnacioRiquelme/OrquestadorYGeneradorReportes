@@ -25,6 +25,7 @@ public class ProyectoAutomatizacion {
     private java.util.List<String> imagenesSeleccionadas = new java.util.ArrayList<>();
     private boolean reporteGenerado; // Estado de la generación del informe
     private boolean esProyectoManual = false; // Si es true, imagenesSeleccionadas contiene rutas absolutas
+    private java.util.List<ConfiguracionInforme> informes = new java.util.ArrayList<>(); // Lista de informes a generar
 
     public enum TipoVPN {
         SIN_VPN("Sin VPN"),
@@ -242,6 +243,14 @@ public class ProyectoAutomatizacion {
 
     public void setEsProyectoManual(boolean esProyectoManual) {
         this.esProyectoManual = esProyectoManual;
+    }
+
+    public java.util.List<ConfiguracionInforme> getInformes() {
+        return informes;
+    }
+
+    public void setInformes(java.util.List<ConfiguracionInforme> informes) {
+        this.informes = informes;
     }
 }
 
