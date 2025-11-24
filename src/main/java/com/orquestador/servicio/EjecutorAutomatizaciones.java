@@ -33,6 +33,9 @@ public class EjecutorAutomatizaciones {
                 // Limpiar procesos antes de ejecutar
                 limpiarProcesos(logCallback);
 
+                // PASO 1: Limpiar imágenes de la carpeta de capturas antes de ejecutar
+                limpiarImagenesAnteriores(proyecto, logCallback);
+
                 // Crear script temporal para ejecutar
                 File scriptTemp = crearScriptEjecucion(proyecto);
                 
@@ -189,6 +192,64 @@ public class EjecutorAutomatizaciones {
         }
     }
 
+    /**
+     * Limpia todas las imágenes de la carpeta de capturas antes de ejecutar la automatización
+     * Esto asegura que solo estén las imágenes de la ejecución actual
+     */
+    private void limpiarImagenesAnteriores(ProyectoAutomatizacion proyecto, Consumer<String> logCallback) {
+        try {
+            // Determinar la carpeta de capturas según el tipo de ejecución
+            String rutaCapturas = null;
+            
+            if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN || 
+                proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN_NEWMAN) {
+                // Para Maven: test-output/capturaPantalla
+                rutaCapturas = proyecto.getRuta() + File.separator + "test-output" + File.separator + "capturaPantalla";
+            } else if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN) {
+                // Para Newman: capturas (asumido, ajustar según necesidad)
+                rutaCapturas = proyecto.getRuta() + File.separator + "capturas";
+            }
+            
+            if (rutaCapturas == null) {
+                logCallback.accept("  ⚠ No se pudo determinar carpeta de capturas");
+                return;
+            }
+            
+            File carpetaCapturas = new File(rutaCapturas);
+            
+            // Si no existe la carpeta, no hay nada que limpiar
+            if (!carpetaCapturas.exists() || !carpetaCapturas.isDirectory()) {
+                logCallback.accept("  ℹ Carpeta de capturas no existe (se creará en la ejecución)");
+                return;
+            }
+            
+            // Listar todas las imágenes
+            File[] imagenes = carpetaCapturas.listFiles((dir, name) -> 
+                name.toLowerCase().endsWith(".png") || 
+                name.toLowerCase().endsWith(".jpg") || 
+                name.toLowerCase().endsWith(".jpeg")
+            );
+            
+            if (imagenes == null || imagenes.length == 0) {
+                logCallback.accept("  ℹ No hay imágenes anteriores para limpiar");
+                return;
+            }
+            
+            // Eliminar todas las imágenes
+            int eliminadas = 0;
+            for (File imagen : imagenes) {
+                if (imagen.delete()) {
+                    eliminadas++;
+                }
+            }
+            
+            logCallback.accept("  🗑️ Limpiadas " + eliminadas + " imágenes anteriores de: " + carpetaCapturas.getName());
+            
+        } catch (Exception e) {
+            logCallback.accept("  ⚠ Error al limpiar imágenes anteriores: " + e.getMessage());
+        }
+    }
+    
     /**
      * Detiene la ejecucin actual
      */

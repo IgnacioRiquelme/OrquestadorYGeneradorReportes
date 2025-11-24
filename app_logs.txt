@@ -1,0 +1,7 @@
+﻿javaw : Error: JavaFX runtime components are missing, and are required to run this application
+En línea: 1 Carácter: 59
++ ... $env:PATH"; javaw -jar "OrquestadorAutomatizaciones.jar" 2>&1 | Out-F ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: JavaFX r...his application:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

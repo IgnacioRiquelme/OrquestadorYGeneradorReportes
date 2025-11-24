@@ -35,6 +35,12 @@ public class GeneradorDocumentos {
      * Genera el documento Word y PDF
      */
     public boolean generar() {
+        // Si el proyecto tiene configurados múltiples informes, usar el generador múltiple
+        if (proyecto.getInformes() != null && !proyecto.getInformes().isEmpty()) {
+            return generarMultiplesInformes();
+        }
+        
+        // Caso normal: un solo informe (compatibilidad con versión anterior)
         long inicio = System.currentTimeMillis();
         XWPFDocument document = null;
         String rutaWord = null;
@@ -125,26 +131,75 @@ public class GeneradorDocumentos {
         List<File> imagenesValidas = new ArrayList<>();
         List<String> alertas = new ArrayList<>();
         
-        for (String patron : proyecto.getImagenesSeleccionadas()) {
-            List<File> imagenesPatron = GestorImagenes.obtenerImagenesPorPatron(
-                proyecto.getRutaImagenes(), patron);
-            
-            if (imagenesPatron.isEmpty()) {
-                alertas.add("⚠️ No se encontraron imágenes para: " + patron);
-                continue;
+        // DETECTAR PROYECTO MANUAL: Flag esProyectoManual indica que las imágenes se cargaron manualmente
+        boolean esProyectoManual = proyecto.isEsProyectoManual();
+        
+        System.out.println("[DEBUG VALIDACION] Proyecto manual: " + esProyectoManual);
+        System.out.println("[DEBUG VALIDACION] Ruta imagenes: " + proyecto.getRutaImagenes());
+        System.out.println("[DEBUG VALIDACION] Patrones/Rutas guardadas: " + proyecto.getImagenesSeleccionadas());
+        
+        if (esProyectoManual) {
+            // Para proyectos manuales, las imágenes ya están guardadas con rutas absolutas
+            // Solo necesitamos validar que existan y convertirlas a File
+            for (String rutaAbsoluta : proyecto.getImagenesSeleccionadas()) {
+                File imagen = new File(rutaAbsoluta);
+                if (imagen.exists() && imagen.isFile()) {
+                    imagenesValidas.add(imagen);
+                    System.out.println("[DEBUG VALIDACION MANUAL] Imagen válida: " + imagen.getName());
+                } else {
+                    alertas.add("⚠️ Imagen no encontrada: " + rutaAbsoluta);
+                    System.out.println("[DEBUG VALIDACION MANUAL] Imagen NO encontrada: " + rutaAbsoluta);
+                }
             }
             
-            // Validar rango de tiempo
-            Map<String, Object> validacion = GestorImagenes.validarRangoTiempo(imagenesPatron);
-            List<File> validas = (List<File>) validacion.get("imagenesValidas");
-            List<String> alertasValidacion = (List<String>) validacion.get("alertas");
+            System.out.println("[DEBUG VALIDACION MANUAL] Total imágenes válidas: " + imagenesValidas.size());
+        } else {
+            // PROYECTO AUTOMATIZADO: Buscar por patrones
+            // Normalizar patrones antiguos: si tienen números largos, eliminarlos
+            List<String> patronesNormalizados = new ArrayList<>();
+            for (String patron : proyecto.getImagenesSeleccionadas()) {
+                // Crear un nombre de archivo ficticio para poder usar extraerPatron
+                String nombreFicticio = patron + "20250101_000000.png";
+                String patronNormalizado = GestorImagenes.extraerPatron(nombreFicticio);
+                if (patronNormalizado != null) {
+                    patronesNormalizados.add(patronNormalizado);
+                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' normalizado a: '" + patronNormalizado + "'");
+                } else {
+                    patronesNormalizados.add(patron);
+                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' sin cambios (no se pudo normalizar)");
+                }
+            }
             
-            alertas.addAll(alertasValidacion);
+            System.out.println("[DEBUG VALIDACION] Patrones NORMALIZADOS: " + patronesNormalizados);
             
-            if (validas.isEmpty()) {
-                alertas.add("⚠️ Imagen " + patron + " fuera de rango de tiempo permitido");
-            } else {
-                imagenesValidas.add(validas.get(0)); // Tomar la más reciente
+            for (String patron : patronesNormalizados) {
+                System.out.println("[DEBUG VALIDACION] Buscando patron: '" + patron + "'");
+                
+                List<File> imagenesPatron = GestorImagenes.obtenerImagenesPorPatron(
+                    proyecto.getRutaImagenes(), patron);
+                
+                System.out.println("[DEBUG VALIDACION] Imagenes encontradas para '" + patron + "': " + imagenesPatron.size());
+                if (!imagenesPatron.isEmpty()) {
+                    System.out.println("[DEBUG VALIDACION] Primera imagen: " + imagenesPatron.get(0).getName());
+                }
+                
+                if (imagenesPatron.isEmpty()) {
+                    alertas.add("⚠️ No se encontraron imágenes para: " + patron);
+                    continue;
+                }
+                
+                // Validar rango de tiempo
+                Map<String, Object> validacion = GestorImagenes.validarRangoTiempo(imagenesPatron);
+                List<File> validas = (List<File>) validacion.get("imagenesValidas");
+                List<String> alertasValidacion = (List<String>) validacion.get("alertas");
+                
+                alertas.addAll(alertasValidacion);
+                
+                if (validas.isEmpty()) {
+                    alertas.add("⚠️ Imagen " + patron + " fuera de rango de tiempo permitido");
+                } else {
+                    imagenesValidas.add(validas.get(0)); // Tomar la más reciente
+                }
             }
         }
         
@@ -596,6 +651,254 @@ public class GeneradorDocumentos {
      */
     public String obtenerResumen() {
         return resumenGeneracion.toString();
+    }
+    
+    /**
+     * Genera múltiples informes desde una sola ejecución
+     * Cada informe tiene su template y filtra las imágenes según su patrón
+     */
+    private boolean generarMultiplesInformes() {
+        long inicio = System.currentTimeMillis();
+        int informesGenerados = 0;
+        List<String> documentosWordGenerados = new ArrayList<>();
+        List<String> documentosPdfGenerados = new ArrayList<>();
+        
+        try {
+            proyecto.setMensajeError("MULTI: Iniciando generación múltiple con " + proyecto.getInformes().size() + " informes adicionales");
+            
+            // PRIMERO: Generar el informe PRINCIPAL (configuración base del proyecto)
+            
+            if (proyecto.getRutaTemplateWord() != null && !proyecto.getRutaTemplateWord().isEmpty()) {
+                // Usar el método de validación existente para obtener imágenes del proyecto principal
+                List<File> imagenesInformePrincipal = validarImagenes();
+                
+                if (!imagenesInformePrincipal.isEmpty()) {
+                    // Crear configuración temporal para el informe principal usando los datos base del proyecto
+                    com.orquestador.modelo.ConfiguracionInforme informePrincipal = new com.orquestador.modelo.ConfiguracionInforme();
+                    informePrincipal.setTemplateWord(proyecto.getRutaTemplateWord());
+                    // NO establecer nombreArchivo para el informe principal - usar nombre del proyecto + template
+                    // (nombreArchivo solo se usa cuando está explícitamente configurado en informes adicionales)
+                    // Convertir las rutas de los File a Strings para la configuración
+                    List<String> rutasImagenes = new ArrayList<>();
+                    for (File img : imagenesInformePrincipal) {
+                        rutasImagenes.add(img.getAbsolutePath());
+                    }
+                    informePrincipal.setImagenesSeleccionadas(rutasImagenes);
+                    
+                    // Generar informe principal (número 1)
+                    boolean exitosoPrincipal = generarInformeIndividual(informePrincipal, imagenesInformePrincipal, 1, documentosWordGenerados, documentosPdfGenerados);
+                    if (exitosoPrincipal) {
+                        informesGenerados++;
+                    }
+                }
+            }
+            
+            // SEGUNDO: Iterar sobre cada informe ADICIONAL
+            for (int i = 0; i < proyecto.getInformes().size(); i++) {
+                com.orquestador.modelo.ConfiguracionInforme informe = proyecto.getInformes().get(i);
+                
+                System.out.println("=== LOOP INFORME #" + (i+2) + " ===");
+                System.out.println("Template: " + (informe.getTemplateWord() != null ? informe.getTemplateWord() : "NULL"));
+                System.out.println("Patrón: " + (informe.getPatronImagenes() != null ? informe.getPatronImagenes() : "NULL"));
+                System.out.println("Imgs selec: " + (informe.getImagenesSeleccionadas() != null ? informe.getImagenesSeleccionadas().size() : "NULL"));
+                
+                // Validar configuración del informe
+                if (informe.getTemplateWord() == null || informe.getTemplateWord().trim().isEmpty()) {
+                    System.out.println("SKIP: Template vacío");
+                    continue;
+                }
+                
+                // Obtener imágenes del informe (usar lista seleccionada si existe, sino buscar por patrón)
+                List<File> imagenesInforme;
+                if (informe.getImagenesSeleccionadas() != null && !informe.getImagenesSeleccionadas().isEmpty()) {
+                    // Usar imágenes seleccionadas manualmente
+                    imagenesInforme = new ArrayList<>();
+                    for (String rutaImagen : informe.getImagenesSeleccionadas()) {
+                        File f = new File(rutaImagen);
+                        if (f.exists()) {
+                            imagenesInforme.add(f);
+                        }
+                    }
+                    // Si no encontró ninguna imagen seleccionada, buscar por patrón como fallback
+                    if (imagenesInforme.isEmpty() && informe.getPatronImagenes() != null && !informe.getPatronImagenes().trim().isEmpty()) {
+                        imagenesInforme = buscarImagenesPorPatron(informe.getPatronImagenes());
+                    }
+                } else if (informe.getPatronImagenes() != null && !informe.getPatronImagenes().trim().isEmpty()) {
+                    // Buscar imágenes por patrón
+                    imagenesInforme = buscarImagenesPorPatron(informe.getPatronImagenes());
+                    System.out.println("Buscar por patrón '" + informe.getPatronImagenes() + "' encontró: " + imagenesInforme.size() + " imágenes");
+                } else {
+                    System.out.println("SKIP: Informe sin imágenes ni patrón");
+                    continue;
+                }
+                
+                if (imagenesInforme.isEmpty()) {
+                    System.out.println("SKIP: No se encontraron imágenes para patrón '" + informe.getPatronImagenes() + "'");
+                    System.out.println("Carpeta buscada: " + proyecto.getRutaImagenes());
+                    continue;
+                }
+                
+                // Generar el informe individual
+                System.out.println("Llamando a generarInformeIndividual con " + imagenesInforme.size() + " imágenes...");
+                boolean exitoso = generarInformeIndividual(informe, imagenesInforme, i + 2, documentosWordGenerados, documentosPdfGenerados);
+                System.out.println("Resultado generarInformeIndividual: " + (exitoso ? "EXITOSO" : "FALLÓ"));
+                
+                if (exitoso) {
+                    informesGenerados++;
+                }
+            }
+            
+            // Actualizar estado del proyecto
+            if (informesGenerados > 0) {
+                proyecto.setEstado("EXITOSO");
+                
+                // Guardar la lista de documentos generados (concatenados)
+                if (!documentosWordGenerados.isEmpty()) {
+                    proyecto.setDocumentoWordGenerado(String.join("; ", documentosWordGenerados));
+                }
+                if (!documentosPdfGenerados.isEmpty()) {
+                    proyecto.setDocumentoPdfGenerado(String.join("; ", documentosPdfGenerados));
+                }
+                
+                long tiempoTotal = System.currentTimeMillis() - inicio;
+                proyecto.setTiempoGeneracion(tiempoTotal);
+                
+                return true;
+            } else {
+                proyecto.setEstado("FALLIDO");
+                proyecto.setMensajeError("No se pudo generar ningún informe. Verifica las configuraciones.");
+                return false;
+            }
+            
+        } catch (Exception e) {
+            proyecto.setEstado("FALLIDO");
+            proyecto.setMensajeError("Error en generación múltiple: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+    
+    /**
+     * Busca imágenes en la carpeta configurada que coincidan con el patrón dado
+     */
+    private List<File> buscarImagenesPorPatron(String patron) {
+        List<File> imagenesEncontradas = new ArrayList<>();
+        
+        try {
+            File dirImagenes = new File(proyecto.getRutaImagenes());
+            if (!dirImagenes.exists() || !dirImagenes.isDirectory()) {
+                System.out.println("[DEBUG BUSQUEDA] Directorio no existe: " + proyecto.getRutaImagenes());
+                return imagenesEncontradas;
+            }
+            
+            File[] archivos = dirImagenes.listFiles();
+            if (archivos == null) {
+                return imagenesEncontradas;
+            }
+            
+            // Filtrar archivos por patrón
+            for (File archivo : archivos) {
+                String nombre = archivo.getName();
+                
+                // Verificar si el nombre comienza con el patrón
+                if (nombre.startsWith(patron)) {
+                    imagenesEncontradas.add(archivo);
+                    System.out.println("[DEBUG BUSQUEDA] Match: " + nombre);
+                }
+            }
+            
+            // Ordenar por nombre (timestamp)
+            imagenesEncontradas.sort(Comparator.comparing(File::getName));
+            
+        } catch (Exception e) {
+            System.out.println("[DEBUG BUSQUEDA] Error: " + e.getMessage());
+        }
+        
+        return imagenesEncontradas;
+    }
+    
+    /**
+     * Genera un informe individual con su template y sus imágenes
+     */
+    private boolean generarInformeIndividual(com.orquestador.modelo.ConfiguracionInforme informe, 
+                                            List<File> imagenes, 
+                                            int numeroInforme,
+                                            List<String> documentosWordGenerados,
+                                            List<String> documentosPdfGenerados) {
+        XWPFDocument document = null;
+        String rutaWord = null;
+        
+        try {
+            // Crear nombre único para el archivo
+            String timestamp = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + "_" + 
+                             java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HHmmss"));
+            
+            // Usar nombreArchivo si existe, sino usar solo el nombre del proyecto
+            String nombreFinal;
+            if (informe.getNombreArchivo() != null && !informe.getNombreArchivo().trim().isEmpty()) {
+                nombreFinal = informe.getNombreArchivo().trim() + "_" + timestamp;
+            } else {
+                // Usar solo el nombre del proyecto (sin el nombre del template)
+                nombreFinal = proyecto.getNombre() + "_" + timestamp;
+            }
+            
+            // Crear directorios
+            File dirSalidaWord = new File(proyecto.getRutaSalidaWord());
+            if (!dirSalidaWord.exists()) {
+                dirSalidaWord.mkdirs();
+            }
+            
+            File dirSalidaPdf = new File(proyecto.getRutaSalidaPdf());
+            if (!dirSalidaPdf.exists()) {
+                dirSalidaPdf.mkdirs();
+            }
+            
+            rutaWord = proyecto.getRutaSalidaWord() + File.separator + nombreFinal + ".docx";
+            
+            // Copiar template
+            Files.copy(Paths.get(informe.getTemplateWord()), Paths.get(rutaWord), StandardCopyOption.REPLACE_EXISTING);
+            
+            // Abrir y procesar el documento
+            try (FileInputStream fis = new FileInputStream(rutaWord)) {
+                document = new XWPFDocument(fis);
+                
+                // Adaptar placeholders
+                buscarYAdaptarPlaceholders(document, imagenes.size());
+                
+                // Insertar imágenes
+                insertarImagenesEnDocumento(document, imagenes);
+                
+                // Actualizar fecha
+                actualizarFecha(document);
+                
+                // Guardar Word
+                try (FileOutputStream fos = new FileOutputStream(rutaWord)) {
+                    document.write(fos);
+                }
+                
+                document.close();
+            }
+            
+            // Convertir a PDF
+            String rutaPdf = convertirAPdf(rutaWord);
+            
+            // Registrar documentos generados
+            documentosWordGenerados.add(rutaWord);
+            if (rutaPdf != null) {
+                documentosPdfGenerados.add(rutaPdf);
+            }
+            
+            System.out.println("[DEBUG INDIVIDUAL] Informe #" + numeroInforme + " generado exitosamente");
+            System.out.println("[DEBUG INDIVIDUAL] Word: " + rutaWord);
+            System.out.println("[DEBUG INDIVIDUAL] PDF: " + rutaPdf);
+            
+            return true;
+            
+        } catch (Exception e) {
+            System.out.println("[DEBUG INDIVIDUAL] Error en informe #" + numeroInforme + ": " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
     }
 }
 

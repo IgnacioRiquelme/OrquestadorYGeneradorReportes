@@ -61,6 +61,7 @@ public class GestorConfiguracion {
             return proyectos != null ? proyectos : new ArrayList<>();
         } catch (Exception e) {
             System.err.println("Error al cargar proyectos: " + e.getMessage());
+            e.printStackTrace();
             return new ArrayList<>();
         }
     }
