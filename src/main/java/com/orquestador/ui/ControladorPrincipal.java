@@ -41,6 +41,7 @@ public class ControladorPrincipal {
     private Label lblEstadisticas;
     private Button btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEditar, btnEliminar;
     private ComboBox<String> cboFiltroArea;
+    private ComboBox<String> cboFiltroVPN;
     private EjecutorAutomatizaciones ejecutor;
     private boolean ejecutando = false;
     
@@ -107,11 +108,18 @@ public class ControladorPrincipal {
         cboFiltroArea.setValue("Todas");
         cboFiltroArea.setOnAction(e -> aplicarFiltro());
         
+        cboFiltroVPN = new ComboBox<>();
+        cboFiltroVPN.setPromptText("Filtrar por VPN");
+        cboFiltroVPN.setEditable(false);
+        cboFiltroVPN.getItems().addAll("Todas", "Sin VPN", "Con VPN BCI", "Con VPN CLIP");
+        cboFiltroVPN.setValue("Todas");
+        cboFiltroVPN.setOnAction(e -> aplicarFiltro());
+        
         Button btnRefrescar = new Button(" Refrescar");
         btnRefrescar.setOnAction(e -> refrescarTabla());
         
         botonesAccion.getChildren().addAll(btnAgregar, btnEditar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL), 
-                                           new Label("Area:"), cboFiltroArea, btnRefrescar);
+                           new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar);
         
         // Botones de ejecucin
         HBox botonesEjecucion = new HBox(10);
@@ -159,11 +167,12 @@ public class ControladorPrincipal {
         // Columna Seleccionar
         TableColumn<ProyectoAutomatizacion, Boolean> colSeleccionar = new TableColumn<>("");
         
-        // Checkbox en header para seleccionar/deseleccionar todos
+        // Checkbox en header para seleccionar/deseleccionar todos (respeta filtro)
         CheckBox headerCheckBox = new CheckBox();
         headerCheckBox.setOnAction(e -> {
             boolean selected = headerCheckBox.isSelected();
-            for (ProyectoAutomatizacion p : proyectos) {
+            // Aplicar sólo a los proyectos visibles en la tabla (respeta filtros)
+            for (ProyectoAutomatizacion p : tablaProyectos.getItems()) {
                 p.setSeleccionado(selected);
             }
             tablaProyectos.refresh();
@@ -1950,15 +1959,36 @@ public class ControladorPrincipal {
     }
     
     private void aplicarFiltro() {
-        String filtro = cboFiltroArea.getValue();
-        if (filtro.equals("Todas")) {
-            tablaProyectos.setItems(proyectos);
-        } else {
-            ObservableList<ProyectoAutomatizacion> filtrados = proyectos.stream()
-                .filter(p -> p.getArea().equals(filtro))
-                .collect(Collectors.toCollection(FXCollections::observableArrayList));
-            tablaProyectos.setItems(filtrados);
-        }
+        String filtroArea = cboFiltroArea.getValue();
+        String filtroVpn = cboFiltroVPN != null ? cboFiltroVPN.getValue() : null;
+
+        ObservableList<ProyectoAutomatizacion> filtrados = proyectos.stream()
+            .filter(p -> {
+                boolean areaOk = true;
+                boolean vpnOk = true;
+                if (filtroArea != null && !filtroArea.equals("Todas")) {
+                    areaOk = p.getArea() != null && p.getArea().equals(filtroArea);
+                }
+                if (filtroVpn != null) {
+                    switch (filtroVpn) {
+                        case "Sin VPN":
+                            vpnOk = p.getTipoVPN() == TipoVPN.SIN_VPN;
+                            break;
+                        case "Con VPN BCI":
+                            vpnOk = p.getTipoVPN() == TipoVPN.VPN_BCI;
+                            break;
+                        case "Con VPN CLIP":
+                            vpnOk = p.getTipoVPN() == TipoVPN.VPN_CLIP;
+                            break;
+                        default:
+                            vpnOk = true;
+                    }
+                }
+                return areaOk && vpnOk;
+            })
+            .collect(Collectors.toCollection(FXCollections::observableArrayList));
+
+        tablaProyectos.setItems(filtrados);
         actualizarEstadisticas();
     }
     
