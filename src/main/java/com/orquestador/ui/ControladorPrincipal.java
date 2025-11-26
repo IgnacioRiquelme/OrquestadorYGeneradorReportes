@@ -167,12 +167,12 @@ public class ControladorPrincipal {
         // Columna Seleccionar
         TableColumn<ProyectoAutomatizacion, Boolean> colSeleccionar = new TableColumn<>("");
         
-        // Checkbox en header para seleccionar/deseleccionar todos (respeta filtro)
+        // Checkbox en header para seleccionar/deseleccionar todos los proyectos
         CheckBox headerCheckBox = new CheckBox();
         headerCheckBox.setOnAction(e -> {
             boolean selected = headerCheckBox.isSelected();
-            // Aplicar sólo a los proyectos visibles en la tabla (respeta filtros)
-            for (ProyectoAutomatizacion p : tablaProyectos.getItems()) {
+            // Aplicar a todos los proyectos (deseleccionar/seleccionar global)
+            for (ProyectoAutomatizacion p : proyectos) {
                 p.setSeleccionado(selected);
             }
             tablaProyectos.refresh();
