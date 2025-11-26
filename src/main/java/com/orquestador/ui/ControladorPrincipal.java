@@ -280,6 +280,35 @@ public class ControladorPrincipal {
         });
         colReporte.setMinWidth(100);
         
+        // Columna Ver Log
+        TableColumn<ProyectoAutomatizacion, Void> colVerLog = new TableColumn<>("Log");
+        colVerLog.setCellFactory(param -> new javafx.scene.control.TableCell<ProyectoAutomatizacion, Void>() {
+            private final Button btnVerLog = new Button("📄 Ver Log");
+            {
+                btnVerLog.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
+                btnVerLog.setOnAction(event -> {
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    abrirLogEjecucion(proyecto);
+                });
+            }
+            @Override
+            protected void updateItem(Void item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || getTableView().getItems().get(getIndex()) == null) {
+                    setGraphic(null);
+                } else {
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    // Mostrar botón solo si hay log de ejecución
+                    if (proyecto.getRutaLogEjecucion() != null && !proyecto.getRutaLogEjecucion().trim().isEmpty()) {
+                        setGraphic(btnVerLog);
+                    } else {
+                        setGraphic(null);
+                    }
+                }
+            }
+        });
+        colVerLog.setMinWidth(100);
+        
         // Columna Configurar (para proyectos especiales con credenciales O proyectos manuales sin ruta)
         TableColumn<ProyectoAutomatizacion, Void> colConfigurar = new TableColumn<>("Configurar");
         colConfigurar.setCellFactory(param -> new javafx.scene.control.TableCell<ProyectoAutomatizacion, Void>() {
@@ -320,7 +349,7 @@ public class ControladorPrincipal {
         });
         colConfigurar.setMinWidth(150);
         
-        tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colConfigurar);
+        tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colVerLog, colConfigurar);
         
         container.getChildren().addAll(lblTabla, tablaProyectos);
         VBox.setVgrow(tablaProyectos, Priority.ALWAYS);
@@ -662,6 +691,8 @@ public class ControladorPrincipal {
             
             filaInforme.getChildren().addAll(
                 lblNumInforme,
+                new Label("Nombre del Archivo:"),
+                txtNombreArchivo,
                 new Label("Template Word:"),
                 hboxTemplateInforme,
                 new Label("Imágenes:"),
@@ -1342,13 +1373,23 @@ public class ControladorPrincipal {
     // Detectar la ruta de imágenes probando rutas candidatas dentro del proyecto
     private String detectarRutaImagenesDesdeRuta(String ruta) {
         if (ruta == null || ruta.isEmpty()) return null;
+        
+        // Normalizar separadores
+        String normalized = ruta.replace('/', '\\').trim();
+        java.io.File base = new java.io.File(normalized);
+        
+        // Candidatos de rutas relativas (intentar en orden)
         String[] candidatos = new String[] {
             "test-output\\capturaPantalla",
-            "Archivos\\screenshots\\evidencia"
+            "Archivos\\screenshots\\evidencia",
+            "Archivos\\screenshots",
+            "screenshots\\evidencia",
+            "screenshots",
+            "capturaPantalla",
+            "test-output"
         };
-        // normalizar separadores
-        String normalized = ruta.replace('/', '\\');
-        java.io.File base = new java.io.File(normalized);
+        
+        // Buscar en la ruta base actual
         for (String rel : candidatos) {
             java.io.File cand = new java.io.File(base, rel);
             if (cand.exists() && cand.isDirectory()) {
@@ -1359,6 +1400,25 @@ public class ControladorPrincipal {
                 }
             }
         }
+        
+        // Si no encontró en rutas relativas, buscar subiendo niveles (en caso de rutas anidadas)
+        java.io.File current = base;
+        int maxLevels = 5; // máximo 5 niveles hacia arriba
+        while (current != null && maxLevels > 0) {
+            for (String rel : candidatos) {
+                java.io.File cand = new java.io.File(current, rel);
+                if (cand.exists() && cand.isDirectory()) {
+                    try {
+                        return cand.getCanonicalPath();
+                    } catch (java.io.IOException e) {
+                        return cand.getAbsolutePath();
+                    }
+                }
+            }
+            current = current.getParentFile();
+            maxLevels--;
+        }
+        
         return null;
     }
 
@@ -1853,6 +1913,29 @@ public class ControladorPrincipal {
         ejecutor.detener();
         agregarLog(" Ejecucin detenida por el usuario");
         finalizarEjecucion();
+    }
+    
+    private void abrirLogEjecucion(ProyectoAutomatizacion proyecto) {
+        if (proyecto.getRutaLogEjecucion() == null || proyecto.getRutaLogEjecucion().trim().isEmpty()) {
+            mostrarAlerta("Sin log", "No hay log de ejecución disponible para este proyecto", Alert.AlertType.INFORMATION);
+            return;
+        }
+        
+        java.io.File logFile = new java.io.File(proyecto.getRutaLogEjecucion());
+        
+        if (!logFile.exists()) {
+            mostrarAlerta("Log no encontrado", "El archivo de log no existe:\n" + proyecto.getRutaLogEjecucion(), Alert.AlertType.WARNING);
+            return;
+        }
+        
+        try {
+            // Abrir el archivo con el editor predeterminado del sistema
+            java.awt.Desktop.getDesktop().open(logFile);
+            agregarLog("📄 Abriendo log de: " + proyecto.getNombre());
+        } catch (Exception e) {
+            mostrarAlerta("Error", "No se pudo abrir el archivo de log:\n" + e.getMessage(), Alert.AlertType.ERROR);
+            agregarLog("❌ Error abriendo log: " + e.getMessage());
+        }
     }
     
     private void mostrarCapturas() {

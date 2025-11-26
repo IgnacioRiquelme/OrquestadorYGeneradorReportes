@@ -93,6 +93,9 @@ public class EjecutorAutomatizaciones {
                     logCallback.accept(" " + proyecto.getNombre() + " - FALLIDO (" + duracion + "s)");
                 }
 
+                // GENERAR LOG DESPUÉS DE LA EJECUCIÓN con los reportes de Maven/Newman
+                generarLogDeReportes(proyecto, exitCode, duracion);
+
                 // Limpiar despus de ejecutar
                 scriptTemp.delete();
                 markerFile.delete();
@@ -120,6 +123,10 @@ public class EjecutorAutomatizaciones {
     private File crearScriptEjecucion(ProyectoAutomatizacion proyecto) throws IOException {
         File scriptTemp = File.createTempFile("exec_", ".bat");
         File exitCodeFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".exitcode");
+        File logFile = new File(scriptTemp.getParentFile(), scriptTemp.getName().replace(".bat", ".log"));
+        
+        // Guardar ruta del log en el proyecto
+        proyecto.setRutaLogEjecucion(logFile.getAbsolutePath());
 
         StringBuilder script = new StringBuilder();
         script.append("@echo off\n");
@@ -132,8 +139,8 @@ public class EjecutorAutomatizaciones {
         script.append("echo   VPN: ").append(proyecto.getTipoVPN().getDescripcion()).append("\n");
         script.append("echo ========================================\n");
         script.append("echo.\n");
-
-        // Comando segn tipo de ejecucin
+        
+        // Comando según tipo de ejecución - EJECUCIÓN COMPLETAMENTE NORMAL (cero cambios)
         if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN) {
             script.append("echo Ejecutando mvn test...\n");
             script.append("echo.\n");
@@ -162,6 +169,7 @@ public class EjecutorAutomatizaciones {
         script.append(")\n");
         script.append("echo ========================================\n");
         script.append("echo.\n");
+        
         script.append("echo %TEST_RESULT% > \"").append(exitCodeFile.getAbsolutePath()).append("\"\n");
         script.append("timeout /t 3 >nul\n");
         script.append("exit /b %TEST_RESULT%\n");
@@ -189,6 +197,65 @@ public class EjecutorAutomatizaciones {
         } catch (Exception e) {
             // No es crtico si falla
             logCallback.accept(" Advertencia al limpiar procesos: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Genera un log completo después de la ejecución recolectando los reportes generados
+     */
+    private void generarLogDeReportes(ProyectoAutomatizacion proyecto, int exitCode, int duracion) {
+        if (proyecto.getRutaLogEjecucion() == null) return;
+        
+        try {
+            StringBuilder logContent = new StringBuilder();
+            logContent.append("========================================\n");
+            logContent.append("RESUMEN DE EJECUCION\n");
+            logContent.append("========================================\n");
+            logContent.append("Proyecto: ").append(proyecto.getNombre()).append("\n");
+            logContent.append("Area: ").append(proyecto.getArea()).append("\n");
+            logContent.append("VPN: ").append(proyecto.getTipoVPN().getDescripcion()).append("\n");
+            logContent.append("Tipo: ").append(proyecto.getTipoEjecucion()).append("\n");
+            logContent.append("Duracion: ").append(duracion).append(" segundos\n");
+            logContent.append("Resultado: ").append(exitCode == 0 ? "EXITOSO" : "FALLIDO (Exit Code: " + exitCode + ")").append("\n");
+            logContent.append("Fecha: ").append(java.time.LocalDateTime.now()).append("\n");
+            logContent.append("========================================\n\n");
+
+            // Para Maven: buscar los reportes de Surefire
+            if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN || 
+                proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN_NEWMAN) {
+                
+                File surefireReportsDir = new File(proyecto.getRuta() + File.separator + "test-output" + File.separator + "surefire-reports");
+                if (surefireReportsDir.exists()) {
+                    logContent.append("REPORTES DE MAVEN (Surefire):\n");
+                    logContent.append("========================================\n");
+                    
+                    // Buscar archivos .txt en surefire-reports
+                    File[] reportFiles = surefireReportsDir.listFiles((dir, name) -> name.endsWith(".txt"));
+                    if (reportFiles != null && reportFiles.length > 0) {
+                        for (File reportFile : reportFiles) {
+                            logContent.append("\n--- ").append(reportFile.getName()).append(" ---\n");
+                            try {
+                                String content = new String(java.nio.file.Files.readAllBytes(reportFile.toPath()), "UTF-8");
+                                logContent.append(content).append("\n");
+                            } catch (Exception e) {
+                                logContent.append("Error leyendo reporte: ").append(e.getMessage()).append("\n");
+                            }
+                        }
+                    } else {
+                        logContent.append("No se encontraron reportes .txt\n");
+                    }
+                    logContent.append("\n");
+                }
+            }
+
+            // Guardar el log
+            java.nio.file.Files.write(
+                new File(proyecto.getRutaLogEjecucion()).toPath(),
+                logContent.toString().getBytes("UTF-8")
+            );
+            
+        } catch (Exception e) {
+            // Log silencioso - no interrumpir la ejecución
         }
     }
 

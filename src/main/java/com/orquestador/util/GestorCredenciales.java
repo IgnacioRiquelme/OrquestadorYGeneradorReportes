@@ -136,34 +136,17 @@ public class GestorCredenciales {
         try (FileReader reader = new FileReader(archivo)) {
             JsonObject jsonObject = JsonParser.parseReader(reader).getAsJsonObject();
             
-            // Actualizar campos de credenciales (solo si no están vacíos)
-            if (!cred.getUser().isEmpty()) {
-                jsonObject.addProperty("user", cred.getUser());
-            }
-            if (!cred.getPasword().isEmpty()) {
-                jsonObject.addProperty("pasword", cred.getPasword());
-            }
-            if (!cred.getNAtencionBci().isEmpty()) {
-                jsonObject.addProperty("nAtencionBci", cred.getNAtencionBci());
-            }
-            if (!cred.getNAtencionZenit().isEmpty()) {
-                jsonObject.addProperty("nAtencionZenit", cred.getNAtencionZenit());
-            }
-            if (!cred.getUser2().isEmpty()) {
-                jsonObject.addProperty("user2", cred.getUser2());
-            }
-            if (!cred.getPasword2().isEmpty()) {
-                jsonObject.addProperty("pasword2", cred.getPasword2());
-            }
-            if (!cred.getNumeroTicket().isEmpty()) {
-                jsonObject.addProperty("numeroTicket", cred.getNumeroTicket());
-            }
-            if (!cred.getRutaImagenSolicitud().isEmpty()) {
-                jsonObject.addProperty("rutaImagenSolicitud", cred.getRutaImagenSolicitud());
-            }
-            if (!cred.getRutaImagenCorreo().isEmpty()) {
-                jsonObject.addProperty("rutaImagenCorreo", cred.getRutaImagenCorreo());
-            }
+            // Actualizar campos de credenciales según el tipo de proyecto
+            // Siempre actualizar (permite borrar valores si el usuario deja vacío)
+            jsonObject.addProperty("user", cred.getUser());
+            jsonObject.addProperty("pasword", cred.getPasword());
+            jsonObject.addProperty("nAtencionBci", cred.getNAtencionBci());
+            jsonObject.addProperty("nAtencionZenit", cred.getNAtencionZenit());
+            jsonObject.addProperty("user2", cred.getUser2());
+            jsonObject.addProperty("pasword2", cred.getPasword2());
+            jsonObject.addProperty("numeroTicket", cred.getNumeroTicket());
+            jsonObject.addProperty("rutaImagenSolicitud", cred.getRutaImagenSolicitud());
+            jsonObject.addProperty("rutaImagenCorreo", cred.getRutaImagenCorreo());
             
             // Escribir JSON actualizado
             try (FileWriter writer = new FileWriter(archivo)) {

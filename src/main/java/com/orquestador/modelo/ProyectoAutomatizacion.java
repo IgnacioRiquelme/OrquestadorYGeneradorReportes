@@ -16,6 +16,7 @@ public class ProyectoAutomatizacion {
     private LocalDateTime ultimaEjecucion;
     private Integer duracionSegundos;
     private String mensajeError;
+    private String rutaLogEjecucion; // Ruta del archivo .log de la última ejecución
 
     // Campos para generacion de informes
     private String rutaImagenes;
@@ -235,6 +236,14 @@ public class ProyectoAutomatizacion {
 
     public void setMensajeError(String mensajeError) {
         this.mensajeError = mensajeError;
+    }
+
+    public String getRutaLogEjecucion() {
+        return rutaLogEjecucion;
+    }
+
+    public void setRutaLogEjecucion(String rutaLogEjecucion) {
+        this.rutaLogEjecucion = rutaLogEjecucion;
     }
 
     public boolean isEsProyectoManual() {
