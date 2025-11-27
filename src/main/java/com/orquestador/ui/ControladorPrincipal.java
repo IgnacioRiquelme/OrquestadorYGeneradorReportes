@@ -43,7 +43,7 @@ public class ControladorPrincipal {
     private SortedList<ProyectoAutomatizacion> proyectosOrdenados;
     private TextArea logArea;
     private Label lblEstadisticas;
-    private Button btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEliminar, btnAutomatizar;
+    private Button btnEjecutarSeleccionados, btnCancelarEjecucion, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEliminar, btnAutomatizar;
     private ComboBox<String> cboFiltroArea;
     private ComboBox<String> cboFiltroVPN;
     private EjecutorAutomatizaciones ejecutor;
@@ -159,19 +159,11 @@ public class ControladorPrincipal {
         btnEjecutarSeleccionados = new Button(" Ejecutar Seleccionados");
         btnEjecutarSeleccionados.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
         btnEjecutarSeleccionados.setOnAction(e -> ejecutarSeleccionados());
-        
-        btnEjecutarPorArea = new Button(" Ejecutar por Area");
-        btnEjecutarPorArea.setStyle("-fx-background-color: #FF9800; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
-        btnEjecutarPorArea.setOnAction(e -> ejecutarPorArea());
-        
-        btnDetener = new Button(" Detener");
-        btnDetener.setStyle("-fx-background-color: #9E9E9E; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
-        btnDetener.setDisable(true);
-        btnDetener.setOnAction(e -> detenerEjecucion());
-        
-        btnVerCapturas = new Button(" Ver Capturas");
-        btnVerCapturas.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
-        btnVerCapturas.setOnAction(e -> mostrarCapturas());
+
+        btnCancelarEjecucion = new Button(" Cancelar Ejecución");
+        btnCancelarEjecucion.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
+        btnCancelarEjecucion.setDisable(true);
+        btnCancelarEjecucion.setOnAction(e -> cancelarEjecucion());
         
         btnGenerarInformes = new Button(" Generar Informes");
         btnGenerarInformes.setStyle("-fx-background-color: #FF6F00; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
@@ -181,7 +173,7 @@ public class ControladorPrincipal {
         btnAutomatizar.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
         btnAutomatizar.setOnAction(e -> automatizarEjecucion());
 
-        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAutomatizar);
+        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnCancelarEjecucion, btnGenerarInformes, btnAutomatizar);
         
         header.getChildren().addAll(titulo, botonesAccion, botonesEjecucion);
         return header;
@@ -281,7 +273,15 @@ public class ControladorPrincipal {
         
         // Columna Estado
         TableColumn<ProyectoAutomatizacion, String> colEstado = new TableColumn<>("Estado");
-        colEstado.setCellValueFactory(cellData -> new javafx.beans.property.SimpleStringProperty(cellData.getValue().getEstado().getDescripcion()));
+        colEstado.setCellValueFactory(cellData -> {
+            ProyectoAutomatizacion proyecto = cellData.getValue();
+            // Mostrar estado solo si está seleccionado o en ejecución
+            if (proyecto.isSeleccionado() || proyecto.getEstado() != EstadoEjecucion.PENDIENTE) {
+                return new javafx.beans.property.SimpleStringProperty(proyecto.getEstado().getDescripcion());
+            } else {
+                return new javafx.beans.property.SimpleStringProperty("");
+            }
+        });
         colEstado.setMinWidth(120);
         
         // Columna Ultima Ejecucion
@@ -386,11 +386,15 @@ public class ControladorPrincipal {
         
         tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colVerLog, colConfigurar);
 
-        // Agregar menú contextual (click derecho) para editar
+        // Agregar menú contextual (click derecho) para editar y ver capturas
         ContextMenu contextMenu = new ContextMenu();
         MenuItem menuEditar = new MenuItem("Editar Proyecto");
         menuEditar.setOnAction(e -> editarProyecto());
-        contextMenu.getItems().add(menuEditar);
+
+        MenuItem menuVerCapturas = new MenuItem("Ver Capturas");
+        menuVerCapturas.setOnAction(e -> mostrarCapturas());
+
+        contextMenu.getItems().addAll(menuEditar, menuVerCapturas);
         tablaProyectos.setContextMenu(contextMenu);
 
         container.getChildren().addAll(lblTabla, tablaProyectos);
@@ -799,7 +803,24 @@ public class ControladorPrincipal {
 
                 // Si usó selector manual, guardar esas imágenes
                 if (chkSeleccionar.isSelected() && !imagenesSeleccionadasManualmente.isEmpty()) {
-                    proyecto.setImagenesSeleccionadas(imagenesSeleccionadasManualmente);
+                    // Para proyectos con automatización, convertir rutas absolutas a patrones
+                    // Para proyectos manuales, mantener rutas absolutas
+                    if (!rutaVacia) {
+                        List<String> patrones = new ArrayList<>();
+                        for (String rutaAbsoluta : imagenesSeleccionadasManualmente) {
+                            String nombreArchivo = new java.io.File(rutaAbsoluta).getName();
+                            String patron = extraerPatronDeImagen(nombreArchivo);
+                            if (patron != null && !patron.isEmpty()) {
+                                patrones.add(patron);
+                            } else {
+                                patrones.add(nombreArchivo); // fallback
+                            }
+                        }
+                        proyecto.setImagenesSeleccionadas(patrones);
+                    } else {
+                        // Proyecto manual: mantener rutas absolutas
+                        proyecto.setImagenesSeleccionadas(new ArrayList<>(imagenesSeleccionadasManualmente));
+                    }
                 }
 
                 // Guardar lista de informes configurados
@@ -1780,8 +1801,7 @@ public class ControladorPrincipal {
         
         ejecutando = true;
         btnEjecutarSeleccionados.setDisable(true);
-        btnEjecutarPorArea.setDisable(true);
-        btnDetener.setDisable(false);
+        btnCancelarEjecucion.setDisable(false);
         btnAgregar.setDisable(true);
         btnEliminar.setDisable(true);
         
@@ -1957,10 +1977,10 @@ public class ControladorPrincipal {
         }
     }
     
-    private void detenerEjecucion() {
+    private void cancelarEjecucion() {
         ejecutando = false;
         ejecutor.detener();
-        agregarLog(" Ejecucin detenida por el usuario");
+        agregarLog("🚫 EJECUCIÓN CANCELADA - Deteniendo proceso actual y cancelando ejecuciones siguientes");
         finalizarEjecucion();
     }
     
@@ -2011,11 +2031,22 @@ public class ControladorPrincipal {
         flow.setVgap(10);
         flow.setPadding(new javafx.geometry.Insets(10));
         
-        // Procesar solo el proyecto seleccionado
-        java.io.File carpetaCapturas = new java.io.File(seleccionado.getRuta(), "test-output/capturaPantalla");
-        
+        // Determinar la ruta de las imágenes: usar ruta configurada o ruta por defecto
+        String rutaImagenes = seleccionado.getRutaImagenes();
+        java.io.File carpetaCapturas;
+
+        if (rutaImagenes != null && !rutaImagenes.trim().isEmpty()) {
+            // Usar ruta de imágenes configurada (para proyectos con selección manual)
+            carpetaCapturas = new java.io.File(rutaImagenes);
+            System.out.println("[DEBUG] Usando ruta de imágenes configurada: " + carpetaCapturas.getAbsolutePath());
+        } else {
+            // Usar ruta por defecto del proyecto
+            carpetaCapturas = new java.io.File(seleccionado.getRuta(), "test-output/capturaPantalla");
+            System.out.println("[DEBUG] Usando ruta por defecto: " + carpetaCapturas.getAbsolutePath());
+        }
+
         System.out.println("[DEBUG] Ruta del proyecto: " + seleccionado.getRuta());
-        System.out.println("[DEBUG] Buscando capturas en: " + carpetaCapturas.getAbsolutePath());
+        System.out.println("[DEBUG] Ruta de imágenes configurada: " + rutaImagenes);
         System.out.println("[DEBUG] Carpeta existe: " + carpetaCapturas.exists());
         
         if (!carpetaCapturas.exists()) {
@@ -2083,8 +2114,7 @@ public class ControladorPrincipal {
     private void finalizarEjecucion() {
         ejecutando = false;
         btnEjecutarSeleccionados.setDisable(false);
-        btnEjecutarPorArea.setDisable(false);
-        btnDetener.setDisable(true);
+        btnCancelarEjecucion.setDisable(true);
         btnAgregar.setDisable(false);
         btnEliminar.setDisable(false);
         actualizarEstadisticas();

@@ -265,19 +265,22 @@ public class EjecutorAutomatizaciones {
      */
     private void limpiarImagenesAnteriores(ProyectoAutomatizacion proyecto, Consumer<String> logCallback) {
         try {
-            // Determinar la carpeta de capturas según el tipo de ejecución
-            String rutaCapturas = null;
-            
-            if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN || 
-                proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN_NEWMAN) {
-                // Para Maven: test-output/capturaPantalla
-                rutaCapturas = proyecto.getRuta() + File.separator + "test-output" + File.separator + "capturaPantalla";
-            } else if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN) {
-                // Para Newman: capturas (asumido, ajustar según necesidad)
-                rutaCapturas = proyecto.getRuta() + File.separator + "capturas";
+            // Usar la ruta de imágenes configurada si existe, sino usar ruta por defecto
+            String rutaCapturas = proyecto.getRutaImagenes();
+
+            if (rutaCapturas == null || rutaCapturas.trim().isEmpty()) {
+                // Determinar la carpeta por defecto según el tipo de ejecución
+                if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN ||
+                    proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN_NEWMAN) {
+                    // Para Maven: test-output/capturaPantalla
+                    rutaCapturas = proyecto.getRuta() + File.separator + "test-output" + File.separator + "capturaPantalla";
+                } else if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN) {
+                    // Para Newman: capturas (asumido, ajustar según necesidad)
+                    rutaCapturas = proyecto.getRuta() + File.separator + "capturas";
+                }
             }
-            
-            if (rutaCapturas == null) {
+
+            if (rutaCapturas == null || rutaCapturas.trim().isEmpty()) {
                 logCallback.accept("  ⚠ No se pudo determinar carpeta de capturas");
                 return;
             }
