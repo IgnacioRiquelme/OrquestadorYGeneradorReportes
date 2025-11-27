@@ -10,6 +10,8 @@ import com.orquestador.util.GestorConfiguracion;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.collections.transformation.FilteredList;
+import javafx.collections.transformation.SortedList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Parent;
@@ -37,17 +39,50 @@ public class ControladorPrincipal {
     private BorderPane root;
     private TableView<ProyectoAutomatizacion> tablaProyectos;
     private ObservableList<ProyectoAutomatizacion> proyectos;
+    private FilteredList<ProyectoAutomatizacion> proyectosFiltrados;
+    private SortedList<ProyectoAutomatizacion> proyectosOrdenados;
     private TextArea logArea;
     private Label lblEstadisticas;
-    private Button btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEditar, btnEliminar;
+    private Button btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEliminar, btnAutomatizar;
     private ComboBox<String> cboFiltroArea;
     private ComboBox<String> cboFiltroVPN;
     private EjecutorAutomatizaciones ejecutor;
     private boolean ejecutando = false;
+    private boolean automatizacionProgramada = false;
+    private java.util.Timer timerAutomatizacion;
+    private List<ProyectoAutomatizacion> proyectosAutomatizados;
     
     public ControladorPrincipal() {
         ejecutor = new EjecutorAutomatizaciones();
         proyectos = FXCollections.observableArrayList(GestorConfiguracion.cargarProyectos());
+
+        // Crear lista filtrada
+        proyectosFiltrados = new FilteredList<>(proyectos, p -> true);
+
+        // Crear lista ordenada con comparador personalizado para ordenar por nombre con números
+        proyectosOrdenados = new SortedList<>(proyectosFiltrados, (p1, p2) -> {
+            String nombre1 = p1.getNombre();
+            String nombre2 = p2.getNombre();
+
+            // Extraer números al inicio de los nombres para ordenamiento natural
+            String num1 = extraerNumeroInicio(nombre1);
+            String num2 = extraerNumeroInicio(nombre2);
+
+            if (!num1.isEmpty() && !num2.isEmpty()) {
+                try {
+                    int n1 = Integer.parseInt(num1);
+                    int n2 = Integer.parseInt(num2);
+                    int cmp = Integer.compare(n1, n2);
+                    if (cmp != 0) return cmp;
+                } catch (NumberFormatException e) {
+                    // Si no son números válidos, comparar como texto
+                }
+            }
+
+            // Comparación alfabética si no hay números o son iguales
+            return nombre1.compareToIgnoreCase(nombre2);
+        });
+
         inicializarUI();
     }
     
@@ -92,11 +127,7 @@ public class ControladorPrincipal {
         btnAgregar = new Button(" Agregar Proyecto");
         btnAgregar.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
         btnAgregar.setOnAction(e -> agregarProyecto());
-        
-        btnEditar = new Button(" Editar Proyecto");
-        btnEditar.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
-        btnEditar.setOnAction(e -> editarProyecto());
-        
+
         btnEliminar = new Button(" Eliminar Seleccionados");
         btnEliminar.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold;");
         btnEliminar.setOnAction(e -> eliminarSeleccionados());
@@ -118,7 +149,7 @@ public class ControladorPrincipal {
         Button btnRefrescar = new Button(" Refrescar");
         btnRefrescar.setOnAction(e -> refrescarTabla());
         
-        botonesAccion.getChildren().addAll(btnAgregar, btnEditar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL), 
+        botonesAccion.getChildren().addAll(btnAgregar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL),
                            new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar);
         
         // Botones de ejecucin
@@ -145,8 +176,12 @@ public class ControladorPrincipal {
         btnGenerarInformes = new Button(" Generar Informes");
         btnGenerarInformes.setStyle("-fx-background-color: #FF6F00; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
         btnGenerarInformes.setOnAction(e -> generarInformes());
-        
-        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes);
+
+        btnAutomatizar = new Button(" Automatizar");
+        btnAutomatizar.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
+        btnAutomatizar.setOnAction(e -> automatizarEjecucion());
+
+        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnEjecutarPorArea, btnDetener, btnVerCapturas, btnGenerarInformes, btnAutomatizar);
         
         header.getChildren().addAll(titulo, botonesAccion, botonesEjecucion);
         return header;
@@ -162,7 +197,7 @@ public class ControladorPrincipal {
         
         tablaProyectos = new TableView<>();
         tablaProyectos.setEditable(true);
-        tablaProyectos.setItems(proyectos);
+        tablaProyectos.setItems(proyectosOrdenados);
         
         // Columna Seleccionar
         TableColumn<ProyectoAutomatizacion, Boolean> colSeleccionar = new TableColumn<>("");
@@ -350,7 +385,14 @@ public class ControladorPrincipal {
         colConfigurar.setMinWidth(150);
         
         tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colVerLog, colConfigurar);
-        
+
+        // Agregar menú contextual (click derecho) para editar
+        ContextMenu contextMenu = new ContextMenu();
+        MenuItem menuEditar = new MenuItem("Editar Proyecto");
+        menuEditar.setOnAction(e -> editarProyecto());
+        contextMenu.getItems().add(menuEditar);
+        tablaProyectos.setContextMenu(contextMenu);
+
         container.getChildren().addAll(lblTabla, tablaProyectos);
         VBox.setVgrow(tablaProyectos, Priority.ALWAYS);
         
@@ -774,6 +816,12 @@ public class ControladorPrincipal {
         resultado.ifPresent(proyecto -> {
             proyectos.add(proyecto);
             guardarProyectos();
+
+            // Resetear filtros para que el proyecto nuevo aparezca inmediatamente
+            cboFiltroArea.setValue("Todas");
+            cboFiltroVPN.setValue("Todas");
+            aplicarFiltro();
+
             actualizarEstadisticas();
             agregarLog("✅ Proyecto agregado: " + proyecto.getNombre());
         });
@@ -1692,15 +1740,16 @@ public class ControladorPrincipal {
     }
 
     private void ejecutarSeleccionados() {
-        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+        // Usar solo los proyectos visibles en la tabla (filtrados) para evitar ejecutar proyectos ocultos por filtros
+        List<ProyectoAutomatizacion> seleccionados = tablaProyectos.getItems().stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
             .collect(Collectors.toList());
-        
+
         if (seleccionados.isEmpty()) {
-            mostrarAlerta("Advertencia", "No hay proyectos seleccionados", Alert.AlertType.WARNING);
+            mostrarAlerta("Advertencia", "No hay proyectos seleccionados en la vista actual", Alert.AlertType.WARNING);
             return;
         }
-        
+
         ejecutarProyectos(seleccionados);
     }
     
@@ -2045,33 +2094,30 @@ public class ControladorPrincipal {
         String filtroArea = cboFiltroArea.getValue();
         String filtroVpn = cboFiltroVPN != null ? cboFiltroVPN.getValue() : null;
 
-        ObservableList<ProyectoAutomatizacion> filtrados = proyectos.stream()
-            .filter(p -> {
-                boolean areaOk = true;
-                boolean vpnOk = true;
-                if (filtroArea != null && !filtroArea.equals("Todas")) {
-                    areaOk = p.getArea() != null && p.getArea().equals(filtroArea);
+        proyectosFiltrados.setPredicate(p -> {
+            boolean areaOk = true;
+            boolean vpnOk = true;
+            if (filtroArea != null && !filtroArea.equals("Todas")) {
+                areaOk = p.getArea() != null && p.getArea().equals(filtroArea);
+            }
+            if (filtroVpn != null) {
+                switch (filtroVpn) {
+                    case "Sin VPN":
+                        vpnOk = p.getTipoVPN() == TipoVPN.SIN_VPN;
+                        break;
+                    case "Con VPN BCI":
+                        vpnOk = p.getTipoVPN() == TipoVPN.VPN_BCI;
+                        break;
+                    case "Con VPN CLIP":
+                        vpnOk = p.getTipoVPN() == TipoVPN.VPN_CLIP;
+                        break;
+                    default:
+                        vpnOk = true;
                 }
-                if (filtroVpn != null) {
-                    switch (filtroVpn) {
-                        case "Sin VPN":
-                            vpnOk = p.getTipoVPN() == TipoVPN.SIN_VPN;
-                            break;
-                        case "Con VPN BCI":
-                            vpnOk = p.getTipoVPN() == TipoVPN.VPN_BCI;
-                            break;
-                        case "Con VPN CLIP":
-                            vpnOk = p.getTipoVPN() == TipoVPN.VPN_CLIP;
-                            break;
-                        default:
-                            vpnOk = true;
-                    }
-                }
-                return areaOk && vpnOk;
-            })
-            .collect(Collectors.toCollection(FXCollections::observableArrayList));
+            }
+            return areaOk && vpnOk;
+        });
 
-        tablaProyectos.setItems(filtrados);
         actualizarEstadisticas();
     }
     
@@ -2084,29 +2130,33 @@ public class ControladorPrincipal {
             proyecto.setReporteGenerado(false);
             proyecto.setMensajeError(null);
         }
-        
+
         // Guardar el estado limpio
         guardarProyectos();
-        
+
+        // Resetear filtros para mostrar todos los proyectos
+        proyectosFiltrados.setPredicate(p -> true);
+
         // Forzar actualización visual de la tabla
         tablaProyectos.refresh();
-        
-        // Aplicar filtro y actualizar estadísticas
+
+        // Aplicar filtro actual y actualizar estadísticas
         aplicarFiltro();
         actualizarEstadisticas();
-        
+
         agregarLog("✅ Tabla limpiada y lista para nueva ejecución - " + proyectos.size() + " proyecto(s)");
     }
     
     private void actualizarEstadisticas() {
         long total = proyectos.size();
+        long visibles = tablaProyectos.getItems().size();
         long seleccionados = proyectos.stream().filter(ProyectoAutomatizacion::isSeleccionado).count();
         long exitosos = proyectos.stream().filter(p -> p.getEstado() == EstadoEjecucion.EXITOSO).count();
         long fallidos = proyectos.stream().filter(p -> p.getEstado() == EstadoEjecucion.FALLIDO).count();
-        
+
         lblEstadisticas.setText(String.format(
-            " Total: %d |  Seleccionados: %d |  Exitosos: %d |  Fallidos: %d",
-            total, seleccionados, exitosos, fallidos
+            " Total: %d |  Visibles: %d |  Seleccionados: %d |  Exitosos: %d |  Fallidos: %d",
+            total, visibles, seleccionados, exitosos, fallidos
         ));
     }
     
@@ -3032,6 +3082,147 @@ public class ControladorPrincipal {
     }
     
     /**
+     * Inicia o detiene la automatización programada de ejecuciones
+     */
+    private void automatizarEjecucion() {
+        if (automatizacionProgramada) {
+            // Detener automatización
+            detenerAutomatizacion();
+            return;
+        }
+
+        // Mostrar diálogo para configurar automatización
+        Dialog<javafx.util.Pair<List<ProyectoAutomatizacion>, Integer>> dialog = new Dialog<>();
+        dialog.setTitle("Configurar Automatización");
+        dialog.setHeaderText("Selecciona proyectos y intervalo para ejecución automática");
+
+        ButtonType btnIniciar = new ButtonType("Iniciar Automatización", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(btnIniciar, ButtonType.CANCEL);
+
+        VBox contenido = new VBox(15);
+        contenido.setPadding(new Insets(20));
+        contenido.setMinWidth(600);
+
+        // Lista de proyectos disponibles
+        Label lblProyectos = new Label("Proyectos disponibles:");
+        javafx.scene.control.ListView<ProyectoAutomatizacion> listProyectos = new javafx.scene.control.ListView<>();
+        listProyectos.setItems(proyectosOrdenados);
+        listProyectos.getSelectionModel().setSelectionMode(javafx.scene.control.SelectionMode.MULTIPLE);
+        listProyectos.setPrefHeight(200);
+
+        // Configurar cómo mostrar los proyectos en la lista
+        listProyectos.setCellFactory(lv -> new javafx.scene.control.ListCell<ProyectoAutomatizacion>() {
+            @Override
+            protected void updateItem(ProyectoAutomatizacion item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText(item.getNombre() + " (" + item.getArea() + ")");
+                }
+            }
+        });
+
+        // Intervalo de tiempo
+        Label lblIntervalo = new Label("Intervalo entre ejecuciones (minutos):");
+        Spinner<Integer> spinnerIntervalo = new Spinner<>(5, 480, 60); // 5 min a 8 horas, default 1 hora
+        spinnerIntervalo.setEditable(true);
+
+        // Información
+        Label lblInfo = new Label("⚠️ La automatización ejecutará los proyectos seleccionados cada X minutos.\n" +
+                                 "Los proyectos se ejecutarán en orden secuencial.\n" +
+                                 "Puedes detener la automatización en cualquier momento.");
+        lblInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+        lblInfo.setWrapText(true);
+
+        contenido.getChildren().addAll(lblProyectos, listProyectos, lblIntervalo, spinnerIntervalo, lblInfo);
+
+        dialog.getDialogPane().setContent(contenido);
+
+        dialog.setResultConverter(dialogButton -> {
+            if (dialogButton == btnIniciar) {
+                List<ProyectoAutomatizacion> seleccionados = listProyectos.getSelectionModel().getSelectedItems();
+                if (seleccionados.isEmpty()) {
+                    mostrarAlerta("Sin selección", "Debes seleccionar al menos un proyecto", Alert.AlertType.WARNING);
+                    return null;
+                }
+                return new javafx.util.Pair<>(seleccionados, spinnerIntervalo.getValue());
+            }
+            return null;
+        });
+
+        Optional<javafx.util.Pair<List<ProyectoAutomatizacion>, Integer>> resultado = dialog.showAndWait();
+        resultado.ifPresent(pair -> {
+            proyectosAutomatizados = new ArrayList<>(pair.getKey());
+            int intervaloMinutos = pair.getValue();
+
+            iniciarAutomatizacion(intervaloMinutos);
+        });
+    }
+
+    /**
+     * Inicia la automatización programada
+     */
+    private void iniciarAutomatizacion(int intervaloMinutos) {
+        automatizacionProgramada = true;
+        btnAutomatizar.setText(" Detener Auto");
+        btnAutomatizar.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
+
+        agregarLog("🔄 INICIANDO AUTOMATIZACIÓN - " + proyectosAutomatizados.size() + " proyecto(s) cada " + intervaloMinutos + " minutos");
+
+        timerAutomatizacion = new java.util.Timer();
+        timerAutomatizacion.scheduleAtFixedRate(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                if (!automatizacionProgramada) return;
+
+                Platform.runLater(() -> {
+                    if (!ejecutando) {
+                        agregarLog("\n⏰ EJECUCIÓN AUTOMÁTICA PROGRAMADA");
+                        ejecutarProyectos(new ArrayList<>(proyectosAutomatizados));
+                    } else {
+                        agregarLog("⏰ Automatización: esperando ejecución actual...");
+                    }
+                });
+            }
+        }, 0, intervaloMinutos * 60 * 1000); // Convertir minutos a milisegundos
+    }
+
+    /**
+     * Detiene la automatización programada
+     */
+    private void detenerAutomatizacion() {
+        automatizacionProgramada = false;
+        if (timerAutomatizacion != null) {
+            timerAutomatizacion.cancel();
+            timerAutomatizacion = null;
+        }
+
+        btnAutomatizar.setText(" Automatizar");
+        btnAutomatizar.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
+
+        agregarLog("🛑 AUTOMATIZACIÓN DETENIDA");
+    }
+
+    /**
+     * Extrae el número al inicio del nombre del proyecto para ordenamiento
+     * Ejemplo: "01-Proyecto A" → "01", "Proyecto B" → ""
+     */
+    private String extraerNumeroInicio(String nombre) {
+        if (nombre == null || nombre.isEmpty()) return "";
+
+        // Buscar patrón de números al inicio seguido de guion o espacio
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("^(\\d+)[\\s-]");
+        java.util.regex.Matcher matcher = pattern.matcher(nombre);
+
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        return "";
+    }
+
+    /**
      * Extrae el patrón de una imagen hasta el último guión bajo antes del timestamp
      * Ejemplo: "t0001_auxilia_bci_20251024_082931.png" → "t0001_auxilia_bci_"
      */
@@ -3061,6 +3252,15 @@ public class ControladorPrincipal {
         return nombreSinExtension + "_";
     }
     
+    /**
+     * Detiene la automatización al cerrar la aplicación
+     */
+    public void detenerAutomatizacionAlCerrar() {
+        if (automatizacionProgramada) {
+            detenerAutomatizacion();
+        }
+    }
+
     public Parent getRoot() {
         return root;
     }

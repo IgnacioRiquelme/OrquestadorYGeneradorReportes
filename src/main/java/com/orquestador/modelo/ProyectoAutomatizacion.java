@@ -95,7 +95,7 @@ public class ProyectoAutomatizacion {
 
     // Constructor
     public ProyectoAutomatizacion() {
-        this.seleccionado = true; // Por defecto seleccionado
+        this.seleccionado = false; // Por defecto NO seleccionado
         this.estado = EstadoEjecucion.PENDIENTE;
         this.tipoVPN = TipoVPN.SIN_VPN;
         this.tipoEjecucion = TipoEjecucion.MAVEN;
