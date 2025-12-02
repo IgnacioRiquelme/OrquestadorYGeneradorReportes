@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.text.Normalizer;
 import java.util.stream.Collectors;
 
 /**
@@ -378,7 +379,7 @@ public class ControladorPrincipal {
                         // Ajustar texto/icono del botón Config según el nombre del proyecto
                         String nombreProyecto = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
                         // Para los proyectos de 'Contactenos' (BCI / Zenit / Corredores) mostramos un ícono más descriptivo
-                        if (nombreProyecto.contains("contact") || nombreProyecto.contains("contactenos") || nombreProyecto.contains("contáctenos")) {
+                        if (esProyectoContactenos(proyecto)) {
                             btnConfigurar.setText("🔐 Credenciales");
                             btnConfigurar.setTooltip(new Tooltip("Editar credenciales del proyecto"));
                         } else {
@@ -1447,6 +1448,28 @@ public class ControladorPrincipal {
         String[] parts = rest.split("\\\\");
         if (parts.length > 0) return parts[0];
         return null;
+    }
+
+    // Determina si el proyecto es uno de los 'Contactenos' concretos (ignorando mayúsculas y tildes)
+    private boolean esProyectoContactenos(ProyectoAutomatizacion proyecto) {
+        if (proyecto == null || proyecto.getNombre() == null) return false;
+        String nombre = proyecto.getNombre().trim();
+        if (nombre.isEmpty()) return false;
+
+        // Normalizar (quitar tildes) y comparar en minúsculas
+        String normalized = Normalizer.normalize(nombre, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        String clave = normalized.toLowerCase();
+
+        String[] targets = new String[] {
+            "contactenos bci seguros",
+            "contactenos zenit seguros",
+            "contactenos corredores generales bci"
+        };
+
+        for (String t : targets) {
+            if (clave.equals(t)) return true;
+        }
+        return false;
     }
 
     // Detectar la ruta de imágenes probando rutas candidatas dentro del proyecto
