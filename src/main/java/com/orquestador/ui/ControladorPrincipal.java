@@ -1458,7 +1458,11 @@ public class ControladorPrincipal {
 
         // Normalizar (quitar tildes) y comparar en minúsculas
         String normalized = Normalizer.normalize(nombre, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
-        String clave = normalized.toLowerCase();
+        // Quitar caracteres especiales y compactar espacios
+        String clave = normalized.toLowerCase().replaceAll("[^\\p{Alnum}\\s]", " ").replaceAll("\\s+", " ").trim();
+
+        // Eliminar prefijo numérico tipo "15 - " si existe
+        clave = clave.replaceFirst("^\\d+\\s*[-:]?\\s*", "");
 
         String[] targets = new String[] {
             "contactenos bci seguros",
@@ -1467,8 +1471,9 @@ public class ControladorPrincipal {
         };
 
         for (String t : targets) {
-            if (clave.equals(t)) return true;
+            if (clave.contains(t)) return true;
         }
+
         return false;
     }
 
