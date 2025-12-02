@@ -372,13 +372,13 @@ public class ControladorPrincipal {
                     // Proyecto manual: sin ruta de automatización
                     boolean esManual = proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty();
                     
-                    if (esManual) {
-                        setGraphic(btnCargarImagenes);
-                    } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
-                        setGraphic(btnConfigurar);
-                    } else {
-                        setGraphic(null);
-                    }
+                        if (esManual) {
+                            setGraphic(btnCargarImagenes);
+                        } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
+                            setGraphic(btnConfigurar);
+                        } else {
+                            setGraphic(null);
+                        }
                 }
             }
         });
@@ -1496,224 +1496,121 @@ public class ControladorPrincipal {
         try {
             // Cargar credenciales actuales
             com.orquestador.modelo.Credenciales cred = com.orquestador.util.GestorCredenciales.cargarCredenciales(proyecto);
-            
+
+            String nombre = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
+
+            // Nota: proyectos que ya no son especiales (p.ej. 'vida') serán filtrados
+            // por GestorCredenciales.esProyectoEspecial(...) y no mostrarán el botón de configuración.
+
             Dialog<com.orquestador.modelo.Credenciales> dialog = new Dialog<>();
             dialog.setTitle("Configurar Credenciales - " + proyecto.getNombre());
-            dialog.setHeaderText("Actualizar datos y imágenes para: " + proyecto.getNombre());
-            
+            dialog.setHeaderText("Actualizar credenciales para: " + proyecto.getNombre());
+
             ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
             dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
-            
-            VBox contenido = new VBox(15);
-            contenido.setPadding(new Insets(20));
-            contenido.setMinWidth(700);
-            contenido.setPrefWidth(750);
-            
-            String nombre = proyecto.getNombre().toLowerCase();
-            
-            // SECCIÓN 1: CREDENCIALES (campos de texto)
+
+            VBox contenido = new VBox(12);
+            contenido.setPadding(new Insets(18));
+            contenido.setMinWidth(480);
+
             Label lblCredenciales = new Label("📝 Credenciales");
             lblCredenciales.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
-            contenido.getChildren().add(lblCredenciales);
-            
-            // Usar contenedor para referencias mutables
+
+            // Botón para ver contraseña actual
+            Button btnVerContrasenaActual = new Button("👁️ Ver Contraseña Actual");
+            btnVerContrasenaActual.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
+            btnVerContrasenaActual.setOnAction(e -> {
+                String contrasenaActual = "";
+                if (nombre.contains("zenit")) {
+                    contrasenaActual = cred.getPasword();
+                } else if (nombre.contains("corredores")) {
+                    contrasenaActual = cred.getPasword2();
+                } else {
+                    contrasenaActual = cred.getPasword();
+                }
+
+                if (contrasenaActual == null || contrasenaActual.isEmpty()) {
+                    mostrarAlerta("Contraseña Actual", "No hay contraseña configurada actualmente.", Alert.AlertType.INFORMATION);
+                } else {
+                    mostrarAlerta("Contraseña Actual", "Contraseña actual: " + contrasenaActual, Alert.AlertType.INFORMATION);
+                }
+            });
+
+            HBox header = new HBox(10);
+            header.setAlignment(Pos.CENTER_LEFT);
+            header.getChildren().addAll(lblCredenciales, btnVerContrasenaActual);
+
+            contenido.getChildren().add(header);
+
+            // Campos mínimos: usuario y contraseña (según tipo)
             java.util.Map<String, javafx.scene.control.Control> campos = new java.util.HashMap<>();
-            
-            VBox vboxCred = new VBox(10);
-            vboxCred.setPadding(new Insets(10));
+
+            VBox vboxCred = new VBox(8);
+            vboxCred.setPadding(new Insets(8));
             vboxCred.setStyle("-fx-border-color: #cccccc; -fx-border-radius: 5;");
-            
+
             if (nombre.contains("zenit")) {
-                // Proyecto 16: user, pasword, nAtencionZenit
                 vboxCred.getChildren().add(new Label("Usuario:"));
                 TextField txtUser = new TextField(cred.getUser());
                 campos.put("user", txtUser);
                 vboxCred.getChildren().add(txtUser);
-                
+
                 vboxCred.getChildren().add(new Label("Contraseña:"));
                 PasswordField txtPassword = new PasswordField();
                 txtPassword.setText(cred.getPasword());
                 campos.put("password", txtPassword);
                 vboxCred.getChildren().add(txtPassword);
-                
-                vboxCred.getChildren().add(new Label("Número Solicitud (Zenit):"));
-                TextField txtNAtencion = new TextField(cred.getNAtencionZenit());
-                campos.put("natencion", txtNAtencion);
-                vboxCred.getChildren().add(txtNAtencion);
-                
-            } else if (nombre.contains("vida")) {
-                // Proyecto 18: numeroTicket
-                vboxCred.getChildren().add(new Label("Número Ticket:"));
-                TextField txtNumeroTicket = new TextField(cred.getNumeroTicket());
-                campos.put("numeroticket", txtNumeroTicket);
-                vboxCred.getChildren().add(txtNumeroTicket);
-                
-            } else if (nombre.contains("corredores") && !nombre.contains("vida")) {
-                // Proyecto 17: user2, pasword2
+
+            } else if (nombre.contains("corredores")) {
                 vboxCred.getChildren().add(new Label("Usuario:"));
                 TextField txtUser2 = new TextField(cred.getUser2());
                 campos.put("user2", txtUser2);
                 vboxCred.getChildren().add(txtUser2);
-                
+
                 vboxCred.getChildren().add(new Label("Contraseña:"));
                 PasswordField txtPassword2 = new PasswordField();
                 txtPassword2.setText(cred.getPasword2());
                 campos.put("password2", txtPassword2);
                 vboxCred.getChildren().add(txtPassword2);
-                
+
             } else {
-                // Proyecto 15 (BCI): user, pasword, nAtencionBci
+                // Por defecto (BCI u otros): user + password
                 vboxCred.getChildren().add(new Label("Usuario:"));
                 TextField txtUser = new TextField(cred.getUser());
                 campos.put("user", txtUser);
                 vboxCred.getChildren().add(txtUser);
-                
+
                 vboxCred.getChildren().add(new Label("Contraseña:"));
                 PasswordField txtPassword = new PasswordField();
                 txtPassword.setText(cred.getPasword());
                 campos.put("password", txtPassword);
                 vboxCred.getChildren().add(txtPassword);
-                
-                vboxCred.getChildren().add(new Label("Número Solicitud (BCI):"));
-                TextField txtNAtencion = new TextField(cred.getNAtencionBci());
-                campos.put("natencion", txtNAtencion);
-                vboxCred.getChildren().add(txtNAtencion);
             }
-            
+
             contenido.getChildren().add(vboxCred);
-            
-            // SECCIÓN 2: IMÁGENES
-            Label lblImagenes = new Label("🖼️ Imágenes");
-            lblImagenes.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
-            contenido.getChildren().add(lblImagenes);
-            
-            VBox vboxImg = new VBox(15);
-            vboxImg.setPadding(new Insets(10));
-            vboxImg.setStyle("-fx-border-color: #cccccc; -fx-border-radius: 5;");
-            
-            // Imagen de Solicitud (solo para proyectos 15, 16, 18 - híbridos)
-            if (!nombre.contains("corredores") || nombre.contains("vida")) {
-                vboxImg.getChildren().add(new Label("📄 Imagen de la Solicitud (PRIMERA imagen del informe):"));
-                
-                TextField txtImgSolicitud = new TextField(cred.getRutaImagenSolicitud());
-                txtImgSolicitud.setPromptText("Ruta de la imagen de solicitud");
-                txtImgSolicitud.setEditable(false);
-                campos.put("imgSolicitud", txtImgSolicitud);
-                
-                Button btnExaminarSolicitud = new Button("Examinar...");
-                btnExaminarSolicitud.setOnAction(e -> {
-                    javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
-                    chooser.setTitle("Seleccionar imagen de solicitud");
-                    chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Imágenes", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"));
-                    java.io.File file = chooser.showOpenDialog(dialog.getOwner());
-                    if (file != null) {
-                        txtImgSolicitud.setText(file.getAbsolutePath());
-                    }
-                });
-                
-                HBox hboxSolicitud = new HBox(10);
-                hboxSolicitud.getChildren().addAll(txtImgSolicitud, btnExaminarSolicitud);
-                HBox.setHgrow(txtImgSolicitud, Priority.ALWAYS);
-                
-                // Drag & Drop para Solicitud
-                configurarDragDropTextField(txtImgSolicitud);
-                
-                vboxImg.getChildren().add(hboxSolicitud);
-            }
-            
-            // Imagen de Correo (para los 4 proyectos)
-            vboxImg.getChildren().add(new Label("📧 Imagen del Correo (ÚLTIMA imagen del informe):"));
-            
-            TextField txtImgCorreo = new TextField(cred.getRutaImagenCorreo());
-            txtImgCorreo.setPromptText("Ruta de la imagen del correo");
-            txtImgCorreo.setEditable(false);
-            campos.put("imgCorreo", txtImgCorreo);
-            
-            Button btnExaminarCorreo = new Button("Examinar...");
-            btnExaminarCorreo.setOnAction(e -> {
-                javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
-                chooser.setTitle("Seleccionar imagen del correo");
-                chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Imágenes", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"));
-                java.io.File file = chooser.showOpenDialog(dialog.getOwner());
-                if (file != null) {
-                    txtImgCorreo.setText(file.getAbsolutePath());
-                }
-            });
-            
-            HBox hboxCorreo = new HBox(10);
-            hboxCorreo.getChildren().addAll(txtImgCorreo, btnExaminarCorreo);
-            HBox.setHgrow(txtImgCorreo, Priority.ALWAYS);
-            
-            // Drag & Drop para Correo
-            configurarDragDropTextField(txtImgCorreo);
-            
-            vboxImg.getChildren().add(hboxCorreo);
-            
-            contenido.getChildren().add(vboxImg);
-            
-            javafx.scene.control.ScrollPane scrollContenido = new javafx.scene.control.ScrollPane(contenido);
-            scrollContenido.setFitToWidth(true);
-            scrollContenido.setPrefHeight(600);
-            
-            dialog.getDialogPane().setContent(scrollContenido);
-            
+
+            dialog.getDialogPane().setContent(contenido);
+
             dialog.setResultConverter(dialogButton -> {
                 if (dialogButton == btnGuardar) {
                     com.orquestador.modelo.Credenciales credActualizada = new com.orquestador.modelo.Credenciales();
-                    
-                    // Recopilar valores según el tipo de proyecto
+
                     if (nombre.contains("zenit")) {
-                        if (campos.containsKey("user")) credActualizada.setUser(((TextField)campos.get("user")).getText());
-                        if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField)campos.get("password")).getText());
-                        if (campos.containsKey("natencion")) credActualizada.setNAtencionZenit(((TextField)campos.get("natencion")).getText());
-                    } else if (nombre.contains("vida")) {
-                        if (campos.containsKey("numeroticket")) credActualizada.setNumeroTicket(((TextField)campos.get("numeroticket")).getText());
-                    } else if (nombre.contains("corredores") && !nombre.contains("vida")) {
-                        if (campos.containsKey("user2")) credActualizada.setUser2(((TextField)campos.get("user2")).getText());
-                        if (campos.containsKey("password2")) credActualizada.setPasword2(((PasswordField)campos.get("password2")).getText());
+                        if (campos.containsKey("user")) credActualizada.setUser(((TextField) campos.get("user")).getText());
+                        if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField) campos.get("password")).getText());
+                    } else if (nombre.contains("corredores")) {
+                        if (campos.containsKey("user2")) credActualizada.setUser2(((TextField) campos.get("user2")).getText());
+                        if (campos.containsKey("password2")) credActualizada.setPasword2(((PasswordField) campos.get("password2")).getText());
                     } else {
-                        // BCI por defecto
-                        if (campos.containsKey("user")) credActualizada.setUser(((TextField)campos.get("user")).getText());
-                        if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField)campos.get("password")).getText());
-                        if (campos.containsKey("natencion")) credActualizada.setNAtencionBci(((TextField)campos.get("natencion")).getText());
+                        if (campos.containsKey("user")) credActualizada.setUser(((TextField) campos.get("user")).getText());
+                        if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField) campos.get("password")).getText());
                     }
-                    
-                    // Imágenes (comunes)
-                    if (campos.containsKey("imgSolicitud")) {
-                        credActualizada.setRutaImagenSolicitud(((TextField)campos.get("imgSolicitud")).getText());
-                    }
-                    if (campos.containsKey("imgCorreo")) {
-                        credActualizada.setRutaImagenCorreo(((TextField)campos.get("imgCorreo")).getText());
-                    }
-                    
-                    // Mostrar alerta de campos no completados (pero permitir guardar)
-                    java.util.List<String> camposVacios = new java.util.ArrayList<>();
-                    if (credActualizada.getUser().isEmpty() && !nombre.contains("vida") && !nombre.contains("corredores")) {
-                        camposVacios.add("Usuario");
-                    }
-                    if (credActualizada.getPasword().isEmpty() && !nombre.contains("vida")) {
-                        camposVacios.add("Contraseña");
-                    }
-                    if (credActualizada.getNumeroTicket().isEmpty() && nombre.contains("vida")) {
-                        camposVacios.add("Número Ticket");
-                    }
-                    if (credActualizada.getRutaImagenSolicitud().isEmpty() && (!nombre.contains("corredores") || nombre.contains("vida"))) {
-                        camposVacios.add("Imagen Solicitud");
-                    }
-                    if (credActualizada.getRutaImagenCorreo().isEmpty()) {
-                        camposVacios.add("Imagen Correo");
-                    }
-                    
-                    if (!camposVacios.isEmpty()) {
-                        String msg = "⚠️ Campos no completados:\n" + String.join(", ", camposVacios) + "\n\nPuedes continuar igual.";
-                        mostrarAlerta("Campos Incompletos", msg, Alert.AlertType.INFORMATION);
-                    }
-                    
+
                     return credActualizada;
                 }
                 return null;
             });
-            
+
             Optional<com.orquestador.modelo.Credenciales> resultado = dialog.showAndWait();
             resultado.ifPresent(credGuardar -> {
                 try {
@@ -1725,7 +1622,7 @@ public class ControladorPrincipal {
                     mostrarAlerta("Error", "No se pudieron guardar las credenciales: " + e.getMessage(), Alert.AlertType.ERROR);
                 }
             });
-            
+
         } catch (Exception e) {
             agregarLog("❌ Error abriendo diálogo de credenciales: " + e.getMessage());
             mostrarAlerta("Error", "Error abriendo el diálogo: " + e.getMessage(), Alert.AlertType.ERROR);
