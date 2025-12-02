@@ -371,14 +371,24 @@ public class ControladorPrincipal {
                     ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
                     // Proyecto manual: sin ruta de automatización
                     boolean esManual = proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty();
-                    
-                        if (esManual) {
-                            setGraphic(btnCargarImagenes);
-                        } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
-                            setGraphic(btnConfigurar);
+
+                    if (esManual) {
+                        setGraphic(btnCargarImagenes);
+                    } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
+                        // Ajustar texto/icono del botón Config según el nombre del proyecto
+                        String nombreProyecto = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
+                        // Para los proyectos de 'Contactenos' (BCI / Zenit / Corredores) mostramos un ícono más descriptivo
+                        if (nombreProyecto.contains("contact") || nombreProyecto.contains("contactenos") || nombreProyecto.contains("contáctenos")) {
+                            btnConfigurar.setText("🔐 Credenciales");
+                            btnConfigurar.setTooltip(new Tooltip("Editar credenciales del proyecto"));
                         } else {
-                            setGraphic(null);
+                            btnConfigurar.setText("⚙️ Config");
+                            btnConfigurar.setTooltip(new Tooltip("Configurar proyecto"));
                         }
+                        setGraphic(btnConfigurar);
+                    } else {
+                        setGraphic(null);
+                    }
                 }
             }
         });
