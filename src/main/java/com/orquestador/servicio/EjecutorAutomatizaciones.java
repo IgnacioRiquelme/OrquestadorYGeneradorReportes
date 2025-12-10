@@ -174,7 +174,9 @@ public class EjecutorAutomatizaciones {
         script.append("timeout /t 3 >nul\n");
         script.append("exit /b %TEST_RESULT%\n");
 
-        java.nio.file.Files.write(scriptTemp.toPath(), script.toString().getBytes("UTF-8"));
+        // Escribir el .bat en codificación compatible con cmd de Windows para evitar problemas
+        // con caracteres y posibles corrupciones de líneas como "echo." -> "cho."
+        java.nio.file.Files.write(scriptTemp.toPath(), script.toString().getBytes("Cp1252"));
         return scriptTemp;
     }
 
