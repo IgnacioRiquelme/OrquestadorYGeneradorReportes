@@ -30,6 +30,7 @@ public class ProyectoAutomatizacion {
 
     public enum TipoVPN {
         SIN_VPN("Sin VPN"),
+        HIBRIDO("Hibrido"),
         VPN_BCI("VPN BCI"),
         VPN_CLIP("VPN Clip");
 

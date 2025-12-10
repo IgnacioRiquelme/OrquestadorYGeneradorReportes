@@ -143,7 +143,7 @@ public class ControladorPrincipal {
         cboFiltroVPN = new ComboBox<>();
         cboFiltroVPN.setPromptText("Filtrar por VPN");
         cboFiltroVPN.setEditable(false);
-        cboFiltroVPN.getItems().addAll("Todas", "Sin VPN", "Con VPN BCI", "Con VPN CLIP");
+        cboFiltroVPN.getItems().addAll("Todas", "Sin VPN", "Hibrido", "Con VPN BCI", "Con VPN CLIP");
         cboFiltroVPN.setValue("Todas");
         cboFiltroVPN.setOnAction(e -> aplicarFiltro());
         
@@ -2069,6 +2069,9 @@ public class ControladorPrincipal {
                 switch (filtroVpn) {
                     case "Sin VPN":
                         vpnOk = p.getTipoVPN() == TipoVPN.SIN_VPN;
+                        break;
+                    case "Hibrido":
+                        vpnOk = p.getTipoVPN() == TipoVPN.HIBRIDO;
                         break;
                     case "Con VPN BCI":
                         vpnOk = p.getTipoVPN() == TipoVPN.VPN_BCI;
