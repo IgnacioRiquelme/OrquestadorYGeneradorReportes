@@ -401,7 +401,7 @@ public class ControladorPrincipal {
         
         tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colVerLog, colConfigurar);
 
-        // Agregar menú contextual (click derecho) para editar y ver capturas
+        // Agregar menú contextual (click derecho) para editar, ver capturas y explorar directorio
         ContextMenu contextMenu = new ContextMenu();
         MenuItem menuEditar = new MenuItem("Editar Proyecto");
         menuEditar.setOnAction(e -> editarProyecto());
@@ -409,7 +409,21 @@ public class ControladorPrincipal {
         MenuItem menuVerCapturas = new MenuItem("Ver Capturas");
         menuVerCapturas.setOnAction(e -> mostrarCapturas());
 
-        contextMenu.getItems().addAll(menuEditar, menuVerCapturas);
+        MenuItem menuExplorar = new MenuItem("Explorar directorio");
+        menuExplorar.setOnAction(e -> {
+            ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
+            if (seleccionado != null && seleccionado.getRuta() != null && !seleccionado.getRuta().trim().isEmpty()) {
+                try {
+                    new ProcessBuilder("explorer.exe", seleccionado.getRuta()).start();
+                } catch (Exception ex) {
+                    logArea.appendText("Error abriendo el Explorador: " + ex.getMessage() + "\n");
+                }
+            } else {
+                logArea.appendText("No hay ruta disponible para el proyecto seleccionado.\n");
+            }
+        });
+
+        contextMenu.getItems().addAll(menuEditar, menuVerCapturas, menuExplorar);
         tablaProyectos.setContextMenu(contextMenu);
 
         container.getChildren().addAll(lblTabla, tablaProyectos);
@@ -475,6 +489,15 @@ public class ControladorPrincipal {
         btnExplorarRuta.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta del proyecto");
+            // Si el campo ya contiene una ruta válida, abrir ahí
+            try {
+                if (txtRuta.getText() != null && !txtRuta.getText().trim().isEmpty()) {
+                    java.io.File init = new java.io.File(txtRuta.getText());
+                    if (init.exists() && init.isDirectory()) {
+                        chooser.setInitialDirectory(init);
+                    }
+                }
+            } catch (Exception ignored) {}
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRuta.setText(folder.getAbsolutePath());
@@ -506,6 +529,14 @@ public class ControladorPrincipal {
         btnExplorarImagenes.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de imágenes");
+            try {
+                if (txtRutaImagenes.getText() != null && !txtRutaImagenes.getText().trim().isEmpty()) {
+                    java.io.File init = new java.io.File(txtRutaImagenes.getText());
+                    if (init.exists() && init.isDirectory()) {
+                        chooser.setInitialDirectory(init);
+                    }
+                }
+            } catch (Exception ignored) {}
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRutaImagenes.setText(folder.getAbsolutePath());
@@ -520,6 +551,16 @@ public class ControladorPrincipal {
             javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
             chooser.setTitle("Seleccionar template Word");
             chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+            // Abrir inicialmente en la carpeta central de templates si existe
+            try {
+                java.io.File defaultTemplates = new java.io.File("C:\\Users\\IARC\\Desktop\\Nuevos esqueletos");
+                if (defaultTemplates.exists() && defaultTemplates.isDirectory()) {
+                    chooser.setInitialDirectory(defaultTemplates);
+                } else if (txtTemplate.getText() != null && !txtTemplate.getText().trim().isEmpty()) {
+                    java.io.File init = new java.io.File(txtTemplate.getText()).getParentFile();
+                    if (init != null && init.exists()) chooser.setInitialDirectory(init);
+                }
+            } catch (Exception ignored) {}
             java.io.File file = chooser.showOpenDialog(dialog.getOwner());
             if (file != null) {
                 txtTemplate.setText(file.getAbsolutePath());
@@ -918,6 +959,12 @@ public class ControladorPrincipal {
         btnExplorarRuta.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta del proyecto");
+            try {
+                if (txtRuta.getText() != null && !txtRuta.getText().trim().isEmpty()) {
+                    java.io.File init = new java.io.File(txtRuta.getText());
+                    if (init.exists() && init.isDirectory()) chooser.setInitialDirectory(init);
+                }
+            } catch (Exception ignored) {}
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRuta.setText(folder.getAbsolutePath());
@@ -963,6 +1010,16 @@ public class ControladorPrincipal {
             javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
             chooser.setTitle("Seleccionar template Word");
             chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+            // Abrir inicialmente en la carpeta central de templates si existe
+            try {
+                java.io.File defaultTemplates = new java.io.File("C:\\Users\\IARC\\Desktop\\Nuevos esqueletos");
+                if (defaultTemplates.exists() && defaultTemplates.isDirectory()) {
+                    chooser.setInitialDirectory(defaultTemplates);
+                } else if (txtTemplate.getText() != null && !txtTemplate.getText().trim().isEmpty()) {
+                    java.io.File init = new java.io.File(txtTemplate.getText()).getParentFile();
+                    if (init != null && init.exists()) chooser.setInitialDirectory(init);
+                }
+            } catch (Exception ignored) {}
             java.io.File file = chooser.showOpenDialog(dialog.getOwner());
             if (file != null) {
                 txtTemplate.setText(file.getAbsolutePath());
