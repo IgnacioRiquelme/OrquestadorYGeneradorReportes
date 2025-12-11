@@ -150,8 +150,12 @@ public class ControladorPrincipal {
         Button btnRefrescar = new Button(" Refrescar");
         btnRefrescar.setOnAction(e -> refrescarTabla());
         
+        Button btnActualizarChromeDriver = new Button("🔄 Actualizar ChromeDriver");
+        btnActualizarChromeDriver.setStyle("-fx-background-color: #00BCD4; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnActualizarChromeDriver.setOnAction(e -> actualizarChromeDriver());
+        
         botonesAccion.getChildren().addAll(btnAgregar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL),
-                           new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar);
+                           new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnActualizarChromeDriver);
         
         // Botones de ejecucin
         HBox botonesEjecucion = new HBox(10);
@@ -3227,6 +3231,139 @@ public class ControladorPrincipal {
         if (automatizacionProgramada) {
             detenerAutomatizacion();
         }
+    }
+    
+    /**
+     * Actualiza el chromedriver.exe en todos los proyectos que lo tengan
+     */
+    private void actualizarChromeDriver() {
+        // Abrir diálogo para seleccionar el nuevo chromedriver.exe
+        javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
+        fileChooser.setTitle("Seleccionar ChromeDriver.exe actualizado");
+        fileChooser.getExtensionFilters().add(
+            new javafx.stage.FileChooser.ExtensionFilter("ChromeDriver", "chromedriver.exe")
+        );
+        
+        java.io.File nuevoDriver = fileChooser.showOpenDialog(root.getScene().getWindow());
+        
+        if (nuevoDriver == null || !nuevoDriver.exists()) {
+            return; // Usuario canceló
+        }
+        
+        // Confirmar acción
+        Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmacion.setTitle("Confirmar actualización");
+        confirmacion.setHeaderText("¿Actualizar ChromeDriver en todos los proyectos?");
+        confirmacion.setContentText("Se buscará y reemplazará chromedriver.exe en todos los proyectos registrados.");
+        
+        if (confirmacion.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
+            return;
+        }
+        
+        // Realizar actualización en background
+        new Thread(() -> {
+            int actualizados = 0;
+            int errores = 0;
+            StringBuilder detalles = new StringBuilder();
+            
+            for (ProyectoAutomatizacion proyecto : proyectos) {
+                if (proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
+                    continue; // Proyecto manual sin ruta
+                }
+                
+                try {
+                    // Buscar chromedriver.exe recursivamente en la carpeta del proyecto
+                    java.io.File carpetaProyecto = new java.io.File(proyecto.getRuta());
+                    java.util.List<java.io.File> driverEncontrados = buscarChromeDriver(carpetaProyecto);
+                    
+                    if (driverEncontrados.isEmpty()) {
+                        detalles.append("⚠️ ").append(proyecto.getNombre()).append(": No se encontró chromedriver.exe\n");
+                        continue;
+                    }
+                    
+                    // Reemplazar cada chromedriver.exe encontrado
+                    for (java.io.File driverAntiguo : driverEncontrados) {
+                        try {
+                            java.nio.file.Files.copy(
+                                nuevoDriver.toPath(),
+                                driverAntiguo.toPath(),
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                            );
+                            detalles.append("✅ ").append(proyecto.getNombre())
+                                   .append(": ").append(driverAntiguo.getAbsolutePath().replace(proyecto.getRuta(), "..."))
+                                   .append("\n");
+                            actualizados++;
+                        } catch (Exception e) {
+                            detalles.append("❌ ").append(proyecto.getNombre())
+                                   .append(": Error - ").append(e.getMessage()).append("\n");
+                            errores++;
+                        }
+                    }
+                    
+                } catch (Exception e) {
+                    detalles.append("❌ ").append(proyecto.getNombre())
+                           .append(": Error - ").append(e.getMessage()).append("\n");
+                    errores++;
+                }
+            }
+            
+            // Mostrar resultado en el hilo de JavaFX
+            final int totalActualizados = actualizados;
+            final int totalErrores = errores;
+            final String mensajeDetalles = detalles.toString();
+            
+            Platform.runLater(() -> {
+                Alert resultado = new Alert(Alert.AlertType.INFORMATION);
+                resultado.setTitle("Actualización completada");
+                resultado.setHeaderText("ChromeDriver actualizado");
+                
+                String resumen = "✅ Actualizados: " + totalActualizados + "\n";
+                if (totalErrores > 0) {
+                    resumen += "❌ Errores: " + totalErrores + "\n";
+                }
+                
+                resultado.setContentText(resumen + "\nDetalles:");
+                
+                // Agregar detalles en TextArea expandible
+                TextArea textArea = new TextArea(mensajeDetalles);
+                textArea.setEditable(false);
+                textArea.setWrapText(true);
+                textArea.setMaxWidth(Double.MAX_VALUE);
+                textArea.setMaxHeight(Double.MAX_VALUE);
+                
+                resultado.getDialogPane().setExpandableContent(textArea);
+                resultado.getDialogPane().setExpanded(true);
+                resultado.showAndWait();
+            });
+            
+        }).start();
+    }
+    
+    /**
+     * Busca recursivamente chromedriver.exe en una carpeta
+     */
+    private java.util.List<java.io.File> buscarChromeDriver(java.io.File carpeta) {
+        java.util.List<java.io.File> resultados = new java.util.ArrayList<>();
+        
+        if (!carpeta.exists() || !carpeta.isDirectory()) {
+            return resultados;
+        }
+        
+        java.io.File[] archivos = carpeta.listFiles();
+        if (archivos == null) {
+            return resultados;
+        }
+        
+        for (java.io.File archivo : archivos) {
+            if (archivo.isFile() && archivo.getName().equalsIgnoreCase("chromedriver.exe")) {
+                resultados.add(archivo);
+            } else if (archivo.isDirectory()) {
+                // Recursión en subcarpetas
+                resultados.addAll(buscarChromeDriver(archivo));
+            }
+        }
+        
+        return resultados;
     }
 
     public Parent getRoot() {
