@@ -24,6 +24,8 @@ import javafx.scene.control.cell.TextFieldTableCell;
 import javafx.scene.layout.*;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -414,7 +416,16 @@ public class ControladorPrincipal {
             ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
             if (seleccionado != null && seleccionado.getRuta() != null && !seleccionado.getRuta().trim().isEmpty()) {
                 try {
-                    new ProcessBuilder("explorer.exe", seleccionado.getRuta()).start();
+                    String ruta = seleccionado.getRuta();
+                    new ProcessBuilder("explorer.exe", ruta).start();
+
+                    // Copiar ruta al portapapeles
+                    Clipboard clipboard = Clipboard.getSystemClipboard();
+                    ClipboardContent content = new ClipboardContent();
+                    content.putString(ruta);
+                    clipboard.setContent(content);
+
+                    logArea.appendText("Abriendo Explorador en: " + ruta + " (ruta copiada al portapapeles)\n");
                 } catch (Exception ex) {
                     logArea.appendText("Error abriendo el Explorador: " + ex.getMessage() + "\n");
                 }
