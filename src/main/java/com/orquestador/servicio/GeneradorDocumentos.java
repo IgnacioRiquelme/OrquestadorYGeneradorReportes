@@ -282,10 +282,13 @@ public class GeneradorDocumentos {
             }
         }
 
-        // Si la cantidad de placeholders es igual a la cantidad de imágenes, NO modificar nada
+        // Log decisión
+        System.out.println("[INFO] Placeholders detectados: " + placeholdersEnDoc + ", Imágenes: " + cantidadImagenes);
         if (placeholdersEnDoc == cantidadImagenes) {
-            System.out.println("[INFO] Cantidad de placeholders coincide con imágenes. No se modifica el documento.");
+            System.out.println("[DECISION] Coinciden cantidades -> usar REEMPLAZO DIRECTO (no se regeneran placeholders)");
             return;
+        } else {
+            System.out.println("[DECISION] No coinciden -> aplicar MÉTODO AUTOMÁTICO de adaptación de placeholders");
         }
 
         // Si no coincide, aplicar el método automático original (solo en párrafos)
@@ -368,11 +371,13 @@ public class GeneradorDocumentos {
      * Inserta imágenes en el documento ya abierto
      */
     private void insertarImagenesEnDocumento(XWPFDocument document, List<File> imagenes) throws Exception {
+        System.out.println("[INFO] Insertar imágenes: detectadas " + imagenes.size() + " imágenes");
         for (int i = 0; i < imagenes.size(); i++) {
             String placeholder = "[Imagen" + (i + 1) + "]";
-            insertarImagenEnDocumento(document, placeholder, imagenes.get(i));
+            boolean reemplazado = insertarImagenEnDocumento(document, placeholder, imagenes.get(i));
+            System.out.println("[INFO] Intento reemplazar " + placeholder + " -> " + (reemplazado ? "OK" : "NO_ENCONTRADO") + " con " + imagenes.get(i).getName());
         }
-        
+
         // Actualizar fecha
         actualizarFecha(document);
     }
@@ -445,62 +450,61 @@ public class GeneradorDocumentos {
      */
     private boolean reemplazarImagenEnParrafo(XWPFParagraph paragraph, String placeholder, File imagen) {
         try {
-            // Buscar el placeholder específico en cada RUN individual
+            // Buscar placeholder incluso si está fragmentado en varios runs
             List<XWPFRun> runs = paragraph.getRuns();
-            int runConPlaceholder = -1;
-            
-            System.out.println("\n=== BUSCANDO: " + placeholder + " ===");
-            System.out.println("Total de runs en párrafo: " + runs.size());
-            
-            for (int i = 0; i < runs.size(); i++) {
-                XWPFRun run = runs.get(i);
-                String textoRun = run.getText(0);
-                System.out.println("  Run[" + i + "]: " + (textoRun != null ? textoRun : "null"));
-                
-                if (textoRun != null && textoRun.contains(placeholder)) {
-                    runConPlaceholder = i;
-                    System.out.println("  ✓ ENCONTRADO en run " + i);
-                    break;
-                }
+            if (runs == null || runs.isEmpty()) return false;
+
+            // Construir texto concatenado y mapa de offsets por run
+            StringBuilder sb = new StringBuilder();
+            List<Integer> runStart = new ArrayList<>();
+            for (XWPFRun r : runs) {
+                runStart.add(sb.length());
+                String t = r.getText(0);
+                if (t != null) sb.append(t);
             }
-            
-            if (runConPlaceholder == -1) {
-                System.out.println("  ✗ NO ENCONTRADO");
+
+            String fullText = sb.toString();
+            int idx = fullText.indexOf(placeholder);
+            if (idx == -1) {
                 return false;
             }
-            
-            // Eliminar el run del placeholder Y el break que le sigue (si existe)
-            System.out.println("Eliminando run " + runConPlaceholder + " (placeholder)");
-            paragraph.removeRun(runConPlaceholder);
-            
-            // Si hay un run siguiente y está vacío o es un break, eliminarlo también
-            if (runConPlaceholder < paragraph.getRuns().size()) {
-                XWPFRun siguienteRun = paragraph.getRuns().get(runConPlaceholder);
-                String textoSiguiente = siguienteRun.getText(0);
-                if (textoSiguiente == null || textoSiguiente.trim().isEmpty()) {
-                    System.out.println("Eliminando run " + runConPlaceholder + " (break)");
-                    paragraph.removeRun(runConPlaceholder);
+
+            // Determinar rango de runs que contienen el placeholder
+            int firstRun = -1, lastRun = -1;
+            for (int i = 0; i < runStart.size(); i++) {
+                int start = runStart.get(i);
+                int end = (i + 1 < runStart.size()) ? runStart.get(i + 1) : fullText.length();
+                if (start <= idx && idx < end) {
+                    firstRun = i;
+                }
+                if (start < idx + placeholder.length() && idx + placeholder.length() <= end) {
+                    lastRun = i;
                 }
             }
-            
-            // Crear nuevo run EN LA MISMA POSICIÓN donde estaba el placeholder
-            XWPFRun nuevoRun = paragraph.insertNewRun(runConPlaceholder);
-            
-            // Configurar alineación CENTER del párrafo
+            // En casos donde placeholder abarca varios runs
+            if (firstRun == -1) firstRun = 0;
+            if (lastRun == -1) lastRun = runs.size() - 1;
+
+            // Eliminar runs desde firstRun hasta lastRun (inclusive)
+            for (int rem = lastRun; rem >= firstRun; rem--) {
+                paragraph.removeRun(rem);
+            }
+
+            // Insertar nuevo run en la posición firstRun
+            XWPFRun nuevoRun = paragraph.insertNewRun(firstRun);
             paragraph.setAlignment(ParagraphAlignment.CENTER);
-            
-            // Insertar imagen en el nuevo run
+
             double anchoPuntos = ANCHO_CM * 28.3464567;
             double altoPuntos = ALTO_CM * 28.3464567;
             int anchoEMU = Units.toEMU(anchoPuntos);
             int altoEMU = Units.toEMU(altoPuntos);
-            
+
             try (FileInputStream fis = new FileInputStream(imagen)) {
-                nuevoRun.addPicture(fis, XWPFDocument.PICTURE_TYPE_PNG, 
+                nuevoRun.addPicture(fis, XWPFDocument.PICTURE_TYPE_PNG,
                     imagen.getName(), anchoEMU, altoEMU);
-                System.out.println("✓ Imagen insertada: " + imagen.getName());
             }
-            
+
+            System.out.println("✓ Imagen insertada: " + imagen.getName() + " en párrafo (runs " + firstRun + "-" + lastRun + ")");
             return true;
         } catch (Exception e) {
             e.printStackTrace();
