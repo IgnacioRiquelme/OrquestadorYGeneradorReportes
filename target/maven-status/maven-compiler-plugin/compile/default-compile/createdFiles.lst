@@ -6,6 +6,7 @@ com\orquestador\utilidades\ExcepcionesGenerador$ConfiguracionInvalidaException.c
 com\orquestador\servicio\GeneradorDocumentos.class
 com\orquestador\utilidades\ExcepcionesGenerador$ImagenesNoEncontradasException.class
 com\orquestador\utilidades\ExcepcionesGenerador$ProyectoInvalidoException.class
+com\orquestador\ui\ControladorPrincipal$5.class
 com\orquestador\utilidades\ExcepcionesGenerador$ConversionPdfFailedException.class
 com\orquestador\modelo\Proyecto.class
 com\orquestador\modelo\ProyectoAutomatizacion$EstadoEjecucion.class
@@ -13,6 +14,7 @@ com\orquestador\modelo\ProyectoAutomatizacion$TipoEjecucion.class
 com\orquestador\ui\ControladorPrincipal.class
 com\orquestador\ui\ControladorPrincipal$3.class
 com\orquestador\ui\ControladorPrincipal$1.class
+com\orquestador\ui\ControladorPrincipal$6.class
 com\orquestador\util\GestorConfiguracion$1.class
 com\orquestador\modelo\Credenciales.class
 com\orquestador\utilidades\GestorImagenes.class
@@ -22,4 +24,5 @@ com\orquestador\modelo\ConfiguracionInforme.class
 com\orquestador\modelo\ProyectoAutomatizacion$TipoVPN.class
 com\orquestador\utilidades\ExcepcionesGenerador$GeneracionFailedException.class
 com\orquestador\app\Main.class
+com\orquestador\ui\ControladorPrincipal$4.class
 com\orquestador\util\GestorCredenciales.class

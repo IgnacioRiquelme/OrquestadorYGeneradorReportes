@@ -14,6 +14,7 @@ import javafx.collections.transformation.FilteredList;
 import javafx.collections.transformation.SortedList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Point2D;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
@@ -26,6 +27,10 @@ import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.MouseEvent;
+import javafx.animation.PauseTransition;
+import javafx.util.Duration;
+import javafx.stage.Popup;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -54,6 +59,15 @@ public class ControladorPrincipal {
     private boolean automatizacionProgramada = false;
     private java.util.Timer timerAutomatizacion;
     private List<ProyectoAutomatizacion> proyectosAutomatizados;
+    
+    // Variables para vista compacta y tiempo total de ejecución
+    private boolean vistaCompacta = false;
+    private Button btnVistaCompacta;
+    private long tiempoInicioEjecucion = 0;
+    private long tiempoTotalAcumulado = 0;
+
+    // Descripciones para ayuda rápida (hover prolongado)
+    private java.util.Map<Button, String> descripcionBotones = new java.util.HashMap<>();
     
     public ControladorPrincipal() {
         ejecutor = new EjecutorAutomatizaciones();
@@ -156,8 +170,32 @@ public class ControladorPrincipal {
         btnActualizarChromeDriver.setStyle("-fx-background-color: #00BCD4; -fx-text-fill: white; -fx-font-weight: bold;");
         btnActualizarChromeDriver.setOnAction(e -> actualizarChromeDriver());
         
+        btnVistaCompacta = new Button("📦 Vista Compacta");
+        btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnVistaCompacta.setOnAction(e -> alternarVistaCompacta());
+        
+        // Registrar descripciones y comportamiento de hover prolongado (3s)
+        descripcionBotones.put(btnAgregar, "Agregar un nuevo proyecto al listado. Abre un diálogo para ingresar nombre, ruta y configuración de generación de informes.");
+        descripcionBotones.put(btnEliminar, "Eliminar los proyectos actualmente seleccionados (checkbox marcados). Esta acción se puede deshacer en la configuración solo manualmente.");
+        descripcionBotones.put(btnVistaCompacta, "Alterna la vista compacta: muestra solo los proyectos seleccionados. Útil para concentrarse en un subconjunto de proyectos.");
+        descripcionBotones.put(btnEjecutarSeleccionados, "Inicia la ejecución secuencial de los proyectos seleccionados en la vista actual. Agrupa por tipo de VPN y muestra popups de conexión cuando corresponde.");
+        descripcionBotones.put(btnCancelarEjecucion, "Cancela la ejecución en curso (intenta detener el proceso actual). No deshace las marcas de ejecución previas.");
+        descripcionBotones.put(btnGenerarInformes, "Genera informes (Word/PDF) a partir de las capturas y resultados de los proyectos seleccionados.");
+        descripcionBotones.put(btnAutomatizar, "Configura una automatización programada: selecciona proyectos y un intervalo en minutos para ejecutar automáticamente.");
+        descripcionBotones.put(btnActualizarChromeDriver, "Buscar y reemplazar ChromeDriver.exe en todos los proyectos registrados con el archivo seleccionado.");
+
+        // Adjuntar comportamiento hover a cada botón con descripción
+        attachHoverInfo(btnAgregar, descripcionBotones.get(btnAgregar));
+        attachHoverInfo(btnEliminar, descripcionBotones.get(btnEliminar));
+        attachHoverInfo(btnVistaCompacta, descripcionBotones.get(btnVistaCompacta));
+        attachHoverInfo(btnEjecutarSeleccionados, descripcionBotones.get(btnEjecutarSeleccionados));
+        attachHoverInfo(btnCancelarEjecucion, descripcionBotones.get(btnCancelarEjecucion));
+        attachHoverInfo(btnGenerarInformes, descripcionBotones.get(btnGenerarInformes));
+        attachHoverInfo(btnAutomatizar, descripcionBotones.get(btnAutomatizar));
+        attachHoverInfo(btnActualizarChromeDriver, descripcionBotones.get(btnActualizarChromeDriver));
+        
         botonesAccion.getChildren().addAll(btnAgregar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL),
-                           new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnActualizarChromeDriver);
+                           new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnActualizarChromeDriver, btnVistaCompacta);
         
         // Botones de ejecucin
         HBox botonesEjecucion = new HBox(10);
@@ -1626,23 +1664,91 @@ public class ControladorPrincipal {
             Label lblCredenciales = new Label("📝 Credenciales");
             lblCredenciales.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
 
-            // Botón para ver contraseña actual
+            // Botón para ver y copiar contraseña actual
             Button btnVerContrasenaActual = new Button("👁️ Ver Contraseña Actual");
             btnVerContrasenaActual.setStyle("-fx-background-color: #2196F3; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVerContrasenaActual.setOnAction(e -> {
                 String contrasenaActual = "";
+                String usuarioActual = "";
                 if (nombre.contains("zenit")) {
                     contrasenaActual = cred.getPasword();
+                    usuarioActual = cred.getUser();
                 } else if (nombre.contains("corredores")) {
                     contrasenaActual = cred.getPasword2();
+                    usuarioActual = cred.getUser();
                 } else {
                     contrasenaActual = cred.getPasword();
+                    usuarioActual = cred.getUser();
                 }
 
+                final String contrasenaFinal = contrasenaActual;
+                final String usuarioFinal = usuarioActual;
+                
                 if (contrasenaActual == null || contrasenaActual.isEmpty()) {
-                    mostrarAlerta("Contraseña Actual", "No hay contraseña configurada actualmente.", Alert.AlertType.INFORMATION);
+                    mostrarAlerta("Credenciales", "No hay contraseña configurada actualmente.", Alert.AlertType.INFORMATION);
                 } else {
-                    mostrarAlerta("Contraseña Actual", "Contraseña actual: " + contrasenaActual, Alert.AlertType.INFORMATION);
+                    // Crear un diálogo con opción de copiar
+                    Dialog<Void> dialogoCred = new Dialog<>();
+                    dialogoCred.setTitle("Credenciales Actuales");
+                    dialogoCred.setHeaderText("Credenciales para: " + proyecto.getNombre());
+                    
+                    VBox contenidoCred = new VBox(12);
+                    contenidoCred.setPadding(new Insets(15));
+                    contenidoCred.setMinWidth(400);
+                    
+                    // Mostrar usuario
+                    HBox hboxUser = new HBox(8);
+                    hboxUser.setAlignment(Pos.CENTER_LEFT);
+                    Label lblUser = new Label("Usuario:");
+                    lblUser.setStyle("-fx-font-weight: bold;");
+                    TextField txtUserDisplay = new TextField(usuarioFinal != null ? usuarioFinal : "");
+                    txtUserDisplay.setEditable(false);
+                    Button btnCopiarUser = new Button("📋 Copiar");
+                    btnCopiarUser.setStyle("-fx-padding: 5;");
+                    btnCopiarUser.setOnAction(e2 -> {
+                        javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+                        javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                        content.putString(usuarioFinal);
+                        clipboard.setContent(content);
+                        mostrarAlerta("Copiado", "Usuario copiado al portapapeles", Alert.AlertType.INFORMATION);
+                    });
+                    hboxUser.getChildren().addAll(lblUser, txtUserDisplay, btnCopiarUser);
+                    
+                    // Mostrar contraseña
+                    HBox hboxPass = new HBox(8);
+                    hboxPass.setAlignment(Pos.CENTER_LEFT);
+                    Label lblPass = new Label("Contraseña:");
+                    lblPass.setStyle("-fx-font-weight: bold;");
+                    TextField txtPassDisplay = new TextField(contrasenaFinal);
+                    txtPassDisplay.setEditable(false);
+                    Button btnCopiarPass = new Button("📋 Copiar");
+                    btnCopiarPass.setStyle("-fx-padding: 5;");
+                    btnCopiarPass.setOnAction(e2 -> {
+                        javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+                        javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                        content.putString(contrasenaFinal);
+                        clipboard.setContent(content);
+                        mostrarAlerta("Copiado", "Contraseña copiada al portapapeles", Alert.AlertType.INFORMATION);
+                    });
+                    hboxPass.getChildren().addAll(lblPass, txtPassDisplay, btnCopiarPass);
+                    
+                    // Botón para copiar ambos datos
+                    Button btnCopiarTodo = new Button("📋 Copiar Todo (usuario:contraseña)");
+                    btnCopiarTodo.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8;");
+                    btnCopiarTodo.setMaxWidth(Double.MAX_VALUE);
+                    btnCopiarTodo.setOnAction(e2 -> {
+                        javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+                        javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                        String datos = (usuarioFinal != null ? usuarioFinal : "") + ":" + contrasenaFinal;
+                        content.putString(datos);
+                        clipboard.setContent(content);
+                        mostrarAlerta("Copiado", "Datos copiados al portapapeles", Alert.AlertType.INFORMATION);
+                    });
+                    
+                    contenidoCred.getChildren().addAll(hboxUser, hboxPass, new Separator(), btnCopiarTodo);
+                    dialogoCred.getDialogPane().setContent(contenidoCred);
+                    dialogoCred.getDialogPane().getButtonTypes().add(ButtonType.OK);
+                    dialogoCred.showAndWait();
                 }
             });
 
@@ -1812,6 +1918,9 @@ public class ControladorPrincipal {
         btnAgregar.setDisable(true);
         btnEliminar.setDisable(true);
         
+        // Guardar los proyectos que se ejecutarán para desmarcarlos después
+        List<ProyectoAutomatizacion> proyectosAEjecutar = new ArrayList<>(listaProyectos);
+        
         agregarLog("\n========================================");
         agregarLog(" INICIANDO EJECUCIN");
         agregarLog("Total de proyectos: " + listaProyectos.size());
@@ -1829,6 +1938,9 @@ public class ControladorPrincipal {
         }
         agregarLog("");
         
+        // Registrar tiempo de inicio
+        tiempoInicioEjecucion = System.currentTimeMillis();
+        
         // Ejecutar en hilo separado
         new Thread(() -> {
             try {
@@ -1836,7 +1948,7 @@ public class ControladorPrincipal {
                     List<ProyectoAutomatizacion> grupoVPN = grupos.get(tipoVPN);
                     
                     // Mostrar popup de VPN si es necesario
-                    if (tipoVPN != TipoVPN.SIN_VPN) {
+                    if (tipoVPN != TipoVPN.SIN_VPN && tipoVPN != TipoVPN.HIBRIDO) {
                         mostrarPopupVPN(tipoVPN, true);
                     }
                     
@@ -1848,7 +1960,7 @@ public class ControladorPrincipal {
                     }
                     
                     // Mostrar popup de desconexin si es necesario
-                    if (tipoVPN != TipoVPN.SIN_VPN) {
+                    if (tipoVPN != TipoVPN.SIN_VPN && tipoVPN != TipoVPN.HIBRIDO) {
                         mostrarPopupVPN(tipoVPN, false);
                     }
                 }
@@ -1856,7 +1968,22 @@ public class ControladorPrincipal {
                 Platform.runLater(() -> {
                     agregarLog("\n========================================");
                     agregarLog(" Ejecucion COMPLETADA");
+                    
+                    // Calcular y mostrar tiempo total
+                    long tiempoFin = System.currentTimeMillis();
+                    long duracionMs = tiempoFin - tiempoInicioEjecucion;
+                    String tiempoTotal = formatearTiempoTotal(duracionMs);
+                    agregarLog(" Tiempo total de ejecucion: " + tiempoTotal);
+                    
                     agregarLog("========================================\n");
+                    
+                    // Desmarcar los checkboxes de los proyectos ejecutados
+                    for (ProyectoAutomatizacion proyecto : proyectosAEjecutar) {
+                        proyecto.setSeleccionado(false);
+                    }
+                    tablaProyectos.refresh();
+                    guardarProyectos();
+                    
                     finalizarEjecucion();
                 });
                 
@@ -1887,13 +2014,16 @@ public class ControladorPrincipal {
         
         // Si VPN BCI tiene ms proyectos que Sin VPN, ejecutar primero
         int sinVPN = grupos.get(TipoVPN.SIN_VPN).size();
+        int hibrido = grupos.get(TipoVPN.HIBRIDO).size();
         int vpnBCI = grupos.get(TipoVPN.VPN_BCI).size();
         
         if (vpnBCI > sinVPN && vpnBCI > 0) {
             if (vpnBCI > 0) orden.add(TipoVPN.VPN_BCI);
             if (sinVPN > 0) orden.add(TipoVPN.SIN_VPN);
+            if (hibrido > 0) orden.add(TipoVPN.HIBRIDO);
         } else {
             if (sinVPN > 0) orden.add(TipoVPN.SIN_VPN);
+            if (hibrido > 0) orden.add(TipoVPN.HIBRIDO);
             if (vpnBCI > 0) orden.add(TipoVPN.VPN_BCI);
         }
         
@@ -3436,6 +3566,93 @@ public class ControladorPrincipal {
 
     public Parent getRoot() {
         return root;
+    }
+    
+    /**
+     * Alterna entre vista compacta (solo proyectos seleccionados) y vista normal (todos los proyectos)
+     */
+    private void alternarVistaCompacta() {
+        vistaCompacta = !vistaCompacta;
+        
+        if (vistaCompacta) {
+            // Activar vista compacta: mostrar solo proyectos seleccionados
+            proyectosFiltrados.setPredicate(p -> p.isSeleccionado());
+            btnVistaCompacta.setStyle("-fx-background-color: #FF5722; -fx-text-fill: white; -fx-font-weight: bold;");
+            btnVistaCompacta.setText("📋 Expandir Vista");
+            agregarLog("✓ Vista compacta ACTIVADA - Mostrando solo proyectos seleccionados");
+        } else {
+            // Desactivar vista compacta: mostrar todos los proyectos
+            proyectosFiltrados.setPredicate(p -> true);
+            btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
+            btnVistaCompacta.setText("📦 Vista Compacta");
+            agregarLog("✓ Vista compacta DESACTIVADA - Mostrando todos los proyectos");
+        }
+        
+        tablaProyectos.refresh();
+    }
+    
+    /**
+     * Convierte milisegundos a un formato legible como "1 hora 15 minutos 30 segundos"
+     */
+    private String formatearTiempoTotal(long duracionMs) {
+        long duracionSegundos = duracionMs / 1000;
+        
+        long horas = duracionSegundos / 3600;
+        long minutos = (duracionSegundos % 3600) / 60;
+        long segundos = duracionSegundos % 60;
+        
+        StringBuilder sb = new StringBuilder();
+        
+        if (horas > 0) {
+            sb.append(horas).append(horas == 1 ? " hora" : " horas");
+        }
+        
+        if (minutos > 0) {
+            if (sb.length() > 0) sb.append(" ");
+            sb.append(minutos).append(minutos == 1 ? " minuto" : " minutos");
+        }
+        
+        if (segundos > 0 || sb.length() == 0) {
+            if (sb.length() > 0) sb.append(" ");
+            sb.append(segundos).append(segundos == 1 ? " segundo" : " segundos");
+        }
+        
+        return sb.toString();
+    }
+
+    /**
+     * Adjunta un pequeño popup informativo que se muestra si el cursor permanece 3 segundos sobre el botón
+     */
+    private void attachHoverInfo(Button btn, String descripcion) {
+        if (btn == null || descripcion == null || descripcion.trim().isEmpty()) return;
+
+        // Crear popup y contenido
+        Popup popup = new Popup();
+        Label lbl = new Label(descripcion);
+        lbl.setStyle("-fx-background-color: #FFFFFF; -fx-border-color: #333; -fx-border-radius: 4; -fx-background-radius: 4; -fx-padding: 8; -fx-font-size: 12px; -fx-text-fill: #222;");
+        lbl.setWrapText(true);
+        lbl.setMaxWidth(340);
+        popup.getContent().add(lbl);
+
+        PauseTransition delay = new PauseTransition(Duration.seconds(3));
+        delay.setOnFinished(ev -> {
+            try {
+                if (btn.isHover()) {
+                    Point2D pos = btn.localToScreen(0, btn.getHeight());
+                    if (pos != null) popup.show(btn, pos.getX(), pos.getY());
+                }
+            } catch (Exception ignored) {}
+        });
+
+        btn.addEventHandler(MouseEvent.MOUSE_ENTERED, e -> delay.playFromStart());
+        btn.addEventHandler(MouseEvent.MOUSE_EXITED, e -> {
+            delay.stop();
+            if (popup.isShowing()) popup.hide();
+        });
+        // Asegurar que si se hace click también se oculte
+        btn.addEventHandler(MouseEvent.MOUSE_PRESSED, e -> {
+            if (popup.isShowing()) popup.hide();
+        });
     }
 }
 

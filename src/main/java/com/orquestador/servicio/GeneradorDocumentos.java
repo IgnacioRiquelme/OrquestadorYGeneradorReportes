@@ -255,24 +255,48 @@ public class GeneradorDocumentos {
      * Busca y adapta los placeholders de imágenes
      */
     private void buscarYAdaptarPlaceholders(XWPFDocument document, int cantidadImagenes) {
-        boolean placeholdersEncontrados = false;
-        
+        // Contar todos los placeholders [ImagenN] en el documento (párrafos y tablas)
+        int placeholdersEnDoc = 0;
         // Buscar en párrafos
+        for (XWPFParagraph paragraph : document.getParagraphs()) {
+            String texto = paragraph.getText();
+            for (int j = 1; j <= cantidadImagenes; j++) {
+                if (texto != null && texto.contains("[Imagen" + j + "]")) {
+                    placeholdersEnDoc++;
+                }
+            }
+        }
+        // Buscar en tablas
+        for (XWPFTable table : document.getTables()) {
+            for (XWPFTableRow row : table.getRows()) {
+                for (XWPFTableCell cell : row.getTableCells()) {
+                    for (XWPFParagraph paragraph : cell.getParagraphs()) {
+                        String texto = paragraph.getText();
+                        for (int j = 1; j <= cantidadImagenes; j++) {
+                            if (texto != null && texto.contains("[Imagen" + j + "]")) {
+                                placeholdersEnDoc++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Si la cantidad de placeholders es igual a la cantidad de imágenes, NO modificar nada
+        if (placeholdersEnDoc == cantidadImagenes) {
+            System.out.println("[INFO] Cantidad de placeholders coincide con imágenes. No se modifica el documento.");
+            return;
+        }
+
+        // Si no coincide, aplicar el método automático original (solo en párrafos)
+        boolean placeholdersEncontrados = false;
         for (int i = 0; i < document.getParagraphs().size(); i++) {
             XWPFParagraph paragraph = document.getParagraphs().get(i);
             String texto = paragraph.getText();
-            
-            // Buscar el párrafo que contiene [Imagen1] - ahí es donde ajustamos
             if (texto.contains("[Imagen1]")) {
                 placeholdersEncontrados = true;
-                
-                // Obtener posición del párrafo actual
                 int posicion = document.getPosOfParagraph(paragraph);
-
-                // Eliminar el párrafo original
                 document.removeBodyElement(posicion);
-
-                // Crear nuevos párrafos individuales para cada placeholder
                 for (int j = 0; j < cantidadImagenes; j++) {
                     XWPFParagraph nuevoParrafo = document.insertNewParagraph(
                         document.getDocument().getBody().insertNewP(posicion + j).newCursor()
@@ -281,7 +305,6 @@ public class GeneradorDocumentos {
                     run.setText("[Imagen" + (j + 1) + "]");
                     nuevoParrafo.setAlignment(ParagraphAlignment.CENTER);
                 }
-
                 // Eliminar párrafos siguientes que tengan placeholders sobrantes (por si hay plantillas con más)
                 List<XWPFParagraph> allParas = document.getParagraphs();
                 for (int k = posicion + cantidadImagenes; k < allParas.size(); k++) {
@@ -291,16 +314,14 @@ public class GeneradorDocumentos {
                         if (nextTexto != null && nextTexto.contains("[Imagen" + img + "]")) {
                             document.removeBodyElement(document.getPosOfParagraph(nextPara));
                             allParas = document.getParagraphs();
-                            k = posicion + cantidadImagenes - 1; // reiniciar desde el primer posible
+                            k = posicion + cantidadImagenes - 1;
                             break;
                         }
                     }
                 }
-
-                break; // Ya procesamos, salir del loop
+                break;
             }
         }
-        
         // Buscar en tablas también
         if (!placeholdersEncontrados) {
             for (XWPFTable table : document.getTables()) {
@@ -625,6 +646,46 @@ public class GeneradorDocumentos {
             e.printStackTrace();
             return null;
         }
+    }
+    
+    /**
+     * Cuenta la cantidad de placeholders [Imagen1], [Imagen2], etc. en el documento
+     */
+    private int contarPlaceholdersEnDocumento(XWPFDocument document) {
+        int contador = 0;
+        
+        // Buscar en párrafos
+        for (XWPFParagraph paragraph : document.getParagraphs()) {
+            String texto = paragraph.getText();
+            if (texto != null) {
+                // Buscar [Imagen1], [Imagen2], ..., [Imagen99]
+                for (int i = 1; i <= 99; i++) {
+                    if (texto.contains("[Imagen" + i + "]")) {
+                        contador = Math.max(contador, i);
+                    }
+                }
+            }
+        }
+        
+        // Buscar en tablas también
+        for (XWPFTable table : document.getTables()) {
+            for (XWPFTableRow row : table.getRows()) {
+                for (XWPFTableCell cell : row.getTableCells()) {
+                    for (XWPFParagraph paragraph : cell.getParagraphs()) {
+                        String texto = paragraph.getText();
+                        if (texto != null) {
+                            for (int i = 1; i <= 99; i++) {
+                                if (texto.contains("[Imagen" + i + "]")) {
+                                    contador = Math.max(contador, i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return contador;
     }
     
     /**
