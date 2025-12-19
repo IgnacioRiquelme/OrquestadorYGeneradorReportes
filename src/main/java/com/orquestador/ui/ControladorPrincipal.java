@@ -111,6 +111,24 @@ public class ControladorPrincipal {
         inicializarUI();
         // Cargar preferencias (estado de vista compacta) después de inicializar la UI
         cargarPreferencias();
+        // Verificar activación/licencia en primer arranque
+        try {
+            com.orquestador.servicio.LicenciaService licencia = new com.orquestador.servicio.LicenciaService();
+            if (!licencia.isActivated()) {
+                boolean ok = licencia.activateInteractive();
+                if (!ok) {
+                    // Usuario no activó o error: salir
+                    System.err.println("Aplicación no activada. Saliendo.");
+                    System.exit(0);
+                }
+            } else {
+                // Chequear estado remoto (no bloqueante)
+                new Thread(() -> { licencia.checkStatus(); }).start();
+            }
+        } catch (Exception e) {
+            // Si falla la verificación, permitir ejecución local (modo offline)
+            System.err.println("Advertencia: no se pudo verificar licencia: " + e.getMessage());
+        }
         // Iniciar gestor de tareas programadas
         programadorTareas = new ProgramadorTareas();
         programadorTareas.setEjecucionHandler(tarea -> {
