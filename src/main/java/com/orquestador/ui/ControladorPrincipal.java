@@ -6,6 +6,8 @@ import com.orquestador.modelo.Proyecto;
 import com.orquestador.modelo.ConfiguracionInforme;
 import com.orquestador.servicio.EjecutorAutomatizaciones;
 import com.orquestador.servicio.GeneradorDocumentos;
+import com.orquestador.servicio.ProgramadorTareas;
+import com.orquestador.modelo.TareaProgramada;
 import com.orquestador.util.GestorConfiguracion;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -33,6 +35,9 @@ import javafx.util.Duration;
 import javafx.stage.Popup;
 
 import java.io.IOException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -55,6 +60,7 @@ public class ControladorPrincipal {
     private ComboBox<String> cboFiltroArea;
     private ComboBox<String> cboFiltroVPN;
     private EjecutorAutomatizaciones ejecutor;
+    private ProgramadorTareas programadorTareas;
     private boolean ejecutando = false;
     private boolean automatizacionProgramada = false;
     private java.util.Timer timerAutomatizacion;
@@ -68,6 +74,8 @@ public class ControladorPrincipal {
 
     // Descripciones para ayuda rápida (hover prolongado)
     private java.util.Map<Button, String> descripcionBotones = new java.util.HashMap<>();
+    // Proyectos deshabilitados (persistente)
+    private java.util.Set<String> proyectosDeshabilitados = new java.util.HashSet<>();
     
     public ControladorPrincipal() {
         ejecutor = new EjecutorAutomatizaciones();
@@ -101,6 +109,50 @@ public class ControladorPrincipal {
         });
 
         inicializarUI();
+        // Cargar preferencias (estado de vista compacta) después de inicializar la UI
+        cargarPreferencias();
+        // Iniciar gestor de tareas programadas
+        programadorTareas = new ProgramadorTareas();
+        programadorTareas.setEjecucionHandler(tarea -> {
+            // Resolver nombres a objetos ProyectoAutomatizacion
+            List<ProyectoAutomatizacion> porEjecutar = proyectos.stream()
+                    .filter(p -> tarea.getProyectos().contains(p.getNombre()))
+                    .collect(Collectors.toList());
+
+            if (tarea.getModo() == TareaProgramada.Modo.CSV_ONLY) {
+                try {
+                    File destino = new File(System.getProperty("user.home"), "orquestador_results_" + tarea.getId() + ".csv");
+                    com.orquestador.servicio.CSVGeneradorResultados.generarCSV(porEjecutar, destino);
+                    agregarLog("📝 CSV generado: " + destino.getAbsolutePath());
+                    mostrarAlerta("CSV generado", "CSV creado: " + destino.getAbsolutePath(), Alert.AlertType.INFORMATION);
+                } catch (Exception e) {
+                    agregarLog("❌ Error generando CSV: " + e.getMessage());
+                }
+                return;
+            }
+
+            // Modo EXEC_AND_REPORT: ejecutar y luego generar informes para los exitosos
+            if (!porEjecutar.isEmpty()) {
+                agregarLog("\n⏰ EJECUCIÓN PROGRAMADA: " + porEjecutar.size() + " proyecto(s)");
+                // Lanzar ejecución
+                ejecutarProyectos(new ArrayList<>(porEjecutar));
+
+                // Iniciar hilo que espera a que termine la ejecución y luego genera informes
+                new Thread(() -> {
+                    // Esperar hasta que no esté ejecutando
+                    while (ejecutando) {
+                        try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
+                    }
+
+                    // Marcar los proyectos objetivo como seleccionados para generación de informes
+                    for (ProyectoAutomatizacion p : porEjecutar) p.setSeleccionado(true);
+                    tablaProyectos.refresh();
+
+                    // Generar informes (usa el flujo existente)
+                    Platform.runLater(() -> generarInformes());
+                }, "ProgramadorTarea-PostExec-").start();
+            }
+        });
     }
     
     private void inicializarUI() {
@@ -269,9 +321,29 @@ public class ControladorPrincipal {
         // Columna Nombre
         TableColumn<ProyectoAutomatizacion, String> colNombre = new TableColumn<>("Nombre");
         colNombre.setCellValueFactory(cellData -> new javafx.beans.property.SimpleStringProperty(cellData.getValue().getNombre()));
-        colNombre.setCellFactory(TextFieldTableCell.forTableColumn());
+        colNombre.setCellFactory(column -> new javafx.scene.control.cell.TextFieldTableCell<ProyectoAutomatizacion, String>(new javafx.util.converter.DefaultStringConverter()) {
+            @Override
+            public void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) return;
+                ProyectoAutomatizacion p = (ProyectoAutomatizacion) getTableRow().getItem();
+                if (p != null && isProyectoDeshabilitado(p.getNombre())) {
+                    setText(item + "  (DESHABILITADO)");
+                    setStyle("-fx-text-fill: #888; -fx-font-style: italic;");
+                } else {
+                    setText(item);
+                    setStyle("");
+                }
+            }
+        });
         colNombre.setOnEditCommit(e -> {
+            String oldName = e.getRowValue().getNombre();
             e.getRowValue().setNombre(e.getNewValue());
+            // Si el proyecto estaba deshabilitado bajo el nombre antiguo, transferir el estado
+            if (isProyectoDeshabilitado(oldName)) {
+                setProyectoDeshabilitado(oldName, false);
+                setProyectoDeshabilitado(e.getNewValue(), true);
+            }
             guardarProyectos();
         });
         colNombre.setMinWidth(200);
@@ -979,6 +1051,7 @@ public class ControladorPrincipal {
     
     private void editarProyecto() {
         ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
+        final String nombreOriginal = seleccionado != null ? seleccionado.getNombre() : null;
         
         if (seleccionado == null) {
             mostrarAlerta("Sin selección", "Selecciona un proyecto de la tabla para editar", Alert.AlertType.WARNING);
@@ -1448,6 +1521,11 @@ public class ControladorPrincipal {
         }
         
         contenido.getChildren().addAll(sep2, lblInformes, lblInfoInformes, btnAgregarInforme, contenedorInformes);
+
+        // Checkbox para deshabilitar el proyecto (persistente)
+        CheckBox chkDeshabilitado = new CheckBox("Deshabilitar proyecto (no participar en ejecuciones)");
+        chkDeshabilitado.setSelected(isProyectoDeshabilitado(nombreOriginal));
+        contenido.getChildren().add(0, chkDeshabilitado);
         
         javafx.scene.control.ScrollPane scrollContenido = new javafx.scene.control.ScrollPane(contenido);
         scrollContenido.setFitToWidth(true);
@@ -1520,7 +1598,23 @@ public class ControladorPrincipal {
                 } else {
                     seleccionado.setInformes(new ArrayList<>());
                 }
-                
+
+                // Gestionar estado de deshabilitado: si cambió el nombre, transferir estado
+                String nuevoNombre = seleccionado.getNombre();
+                if (nombreOriginal != null && !nombreOriginal.equals(nuevoNombre)) {
+                    // Si el original estaba deshabilitado pero ahora no está marcado, quitarlo
+                    if (isProyectoDeshabilitado(nombreOriginal) && !chkDeshabilitado.isSelected()) {
+                        setProyectoDeshabilitado(nombreOriginal, false);
+                    }
+                    // Si marcado como deshabilitado, asegurar que el nuevo nombre quede deshabilitado
+                    if (chkDeshabilitado.isSelected()) {
+                        setProyectoDeshabilitado(nuevoNombre, true);
+                    }
+                } else {
+                    // Mismo nombre: solo establecer según checkbox
+                    setProyectoDeshabilitado(nuevoNombre, chkDeshabilitado.isSelected());
+                }
+
                 return seleccionado;
             }
             return null;
@@ -1877,6 +1971,7 @@ public class ControladorPrincipal {
         // Usar solo los proyectos visibles en la tabla (filtrados) para evitar ejecutar proyectos ocultos por filtros
         List<ProyectoAutomatizacion> seleccionados = tablaProyectos.getItems().stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
+            .filter(p -> !isProyectoDeshabilitado(p.getNombre()))
             .collect(Collectors.toList());
 
         if (seleccionados.isEmpty()) {
@@ -1896,6 +1991,7 @@ public class ControladorPrincipal {
         
         List<ProyectoAutomatizacion> porArea = proyectos.stream()
             .filter(p -> p.getArea().equals(areaSeleccionada))
+            .filter(p -> !isProyectoDeshabilitado(p.getNombre()))
             .collect(Collectors.toList());
         
         if (porArea.isEmpty()) {
@@ -2003,6 +2099,7 @@ public class ControladorPrincipal {
         }
         
         for (ProyectoAutomatizacion proyecto : proyectos) {
+            if (isProyectoDeshabilitado(proyecto.getNombre())) continue;
             grupos.get(proyecto.getTipoVPN()).add(proyecto);
         }
         
@@ -3255,78 +3352,146 @@ public class ControladorPrincipal {
      * Inicia o detiene la automatización programada de ejecuciones
      */
     private void automatizarEjecucion() {
-        if (automatizacionProgramada) {
-            // Detener automatización
-            detenerAutomatizacion();
+        // Recolectar proyectos seleccionados (checkbox en la tabla)
+        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+                .filter(ProyectoAutomatizacion::isSeleccionado)
+                .collect(Collectors.toList());
+
+        if (seleccionados.isEmpty()) {
+            mostrarAlerta("Sin selección", "Marca los checkbox de los proyectos que quieres programar y vuelve a presionar Automatizar.", Alert.AlertType.WARNING);
             return;
         }
 
-        // Mostrar diálogo para configurar automatización
-        Dialog<javafx.util.Pair<List<ProyectoAutomatizacion>, Integer>> dialog = new Dialog<>();
-        dialog.setTitle("Configurar Automatización");
-        dialog.setHeaderText("Selecciona proyectos y intervalo para ejecución automática");
+        // Diálogo para fecha y hora
+        Dialog<TareaProgramada> dialog = new Dialog<>();
+        dialog.setTitle("Programar Automatización");
+        dialog.setHeaderText("Configura fecha y hora para ejecutar los proyectos seleccionados");
 
-        ButtonType btnIniciar = new ButtonType("Iniciar Automatización", ButtonBar.ButtonData.OK_DONE);
-        dialog.getDialogPane().getButtonTypes().addAll(btnIniciar, ButtonType.CANCEL);
+        ButtonType btnProgramar = new ButtonType("Programar", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(btnProgramar, ButtonType.CANCEL);
 
-        VBox contenido = new VBox(15);
-        contenido.setPadding(new Insets(20));
-        contenido.setMinWidth(600);
+        VBox contenido = new VBox(10);
+        contenido.setPadding(new Insets(15));
 
-        // Lista de proyectos disponibles
-        Label lblProyectos = new Label("Proyectos disponibles:");
-        javafx.scene.control.ListView<ProyectoAutomatizacion> listProyectos = new javafx.scene.control.ListView<>();
-        listProyectos.setItems(proyectosOrdenados);
-        listProyectos.getSelectionModel().setSelectionMode(javafx.scene.control.SelectionMode.MULTIPLE);
-        listProyectos.setPrefHeight(200);
+        Label lblNombre = new Label("Nombre de la tarea (opcional):");
+        TextField txtNombre = new TextField();
 
-        // Configurar cómo mostrar los proyectos en la lista
-        listProyectos.setCellFactory(lv -> new javafx.scene.control.ListCell<ProyectoAutomatizacion>() {
-            @Override
-            protected void updateItem(ProyectoAutomatizacion item, boolean empty) {
-                super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
+        Label lblFecha = new Label("Fecha:");
+        DatePicker datePicker = new DatePicker(java.time.LocalDate.now());
+
+        Label lblHora = new Label("Hora (HH:mm):");
+        TextField txtHora = new TextField("09");
+        txtHora.setPrefWidth(50);
+        txtHora.setPromptText("HH");
+        TextField txtMin = new TextField("00");
+        txtMin.setPrefWidth(50);
+        txtMin.setPromptText("mm");
+        // Permitir solo dígitos y máximo 2 caracteres
+        txtHora.textProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal == null) return;
+            String filtered = newVal.replaceAll("[^0-9]", "");
+            if (filtered.length() > 2) filtered = filtered.substring(0,2);
+            if (!filtered.equals(newVal)) txtHora.setText(filtered);
+        });
+        // Al perder foco, formatear con ceros y validar rango 00-23
+        txtHora.focusedProperty().addListener((obs, oldV, newV) -> {
+            if (!newV) {
+                String t = txtHora.getText() == null ? "" : txtHora.getText().trim();
+                if (t.isEmpty()) {
+                    txtHora.setText("00");
                 } else {
-                    setText(item.getNombre() + " (" + item.getArea() + ")");
+                    try {
+                        int v = Integer.parseInt(t);
+                        if (v < 0 || v > 23) txtHora.setText("00");
+                        else txtHora.setText(String.format("%02d", v));
+                    } catch (NumberFormatException ex) {
+                        txtHora.setText("00");
+                    }
                 }
             }
         });
+        txtMin.textProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal == null) return;
+            String filtered = newVal.replaceAll("[^0-9]", "");
+            if (filtered.length() > 2) filtered = filtered.substring(0,2);
+            if (!filtered.equals(newVal)) txtMin.setText(filtered);
+        });
+        // Al perder foco, formatear con ceros y validar rango 00-59
+        txtMin.focusedProperty().addListener((obs, oldV, newV) -> {
+            if (!newV) {
+                String t = txtMin.getText() == null ? "" : txtMin.getText().trim();
+                if (t.isEmpty()) {
+                    txtMin.setText("00");
+                } else {
+                    try {
+                        int v = Integer.parseInt(t);
+                        if (v < 0 || v > 59) txtMin.setText("00");
+                        else txtMin.setText(String.format("%02d", v));
+                    } catch (NumberFormatException ex) {
+                        txtMin.setText("00");
+                    }
+                }
+            }
+        });
+        HBox horaBox = new HBox(5, txtHora, new Label(":"), txtMin);
 
-        // Intervalo de tiempo
-        Label lblIntervalo = new Label("Intervalo entre ejecuciones (minutos):");
-        Spinner<Integer> spinnerIntervalo = new Spinner<>(5, 480, 60); // 5 min a 8 horas, default 1 hora
-        spinnerIntervalo.setEditable(true);
-
-        // Información
-        Label lblInfo = new Label("⚠️ La automatización ejecutará los proyectos seleccionados cada X minutos.\n" +
-                                 "Los proyectos se ejecutarán en orden secuencial.\n" +
-                                 "Puedes detener la automatización en cualquier momento.");
+        Label lblInfo = new Label("La tarea se añadirá a la lista de tareas programadas y se ejecutará en la fecha/hora indicada.");
         lblInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
-        lblInfo.setWrapText(true);
 
-        contenido.getChildren().addAll(lblProyectos, listProyectos, lblIntervalo, spinnerIntervalo, lblInfo);
+        // Opcion de modo: CSV only o ejecutar+reportes
+        Label lblModo = new Label("Modo de tarea:");
+        RadioButton rbCsv = new RadioButton("Solo CSV de resultados (no ejecuta proyectos)");
+        RadioButton rbExec = new RadioButton("Ejecutar proyectos y generar informes");
+        ToggleGroup tgModo = new ToggleGroup();
+        rbCsv.setToggleGroup(tgModo);
+        rbExec.setToggleGroup(tgModo);
+        rbExec.setSelected(true);
 
+        contenido.getChildren().addAll(lblNombre, txtNombre, lblFecha, datePicker, lblHora, horaBox, lblModo, rbCsv, rbExec, lblInfo);
         dialog.getDialogPane().setContent(contenido);
 
-        dialog.setResultConverter(dialogButton -> {
-            if (dialogButton == btnIniciar) {
-                List<ProyectoAutomatizacion> seleccionados = listProyectos.getSelectionModel().getSelectedItems();
-                if (seleccionados.isEmpty()) {
-                    mostrarAlerta("Sin selección", "Debes seleccionar al menos un proyecto", Alert.AlertType.WARNING);
+        dialog.setResultConverter(btn -> {
+            if (btn == btnProgramar) {
+                // Parsear hora/minuto desde TextFields y validar rangos
+                int horaVal;
+                int minVal;
+                try {
+                    String htxt = txtHora.getText() == null ? "" : txtHora.getText();
+                    String mtxt = txtMin.getText() == null ? "" : txtMin.getText();
+                    if (htxt.isEmpty() || mtxt.isEmpty()) {
+                        mostrarAlerta("Hora inválida", "Debes ingresar hora y minutos.", Alert.AlertType.WARNING);
+                        return null;
+                    }
+                    horaVal = Integer.parseInt(htxt);
+                    minVal = Integer.parseInt(mtxt);
+                } catch (NumberFormatException ex) {
+                    mostrarAlerta("Hora inválida", "Hora o minutos no son numéricos.", Alert.AlertType.WARNING);
                     return null;
                 }
-                return new javafx.util.Pair<>(seleccionados, spinnerIntervalo.getValue());
+                if (horaVal < 0 || horaVal > 23 || minVal < 0 || minVal > 59) {
+                    mostrarAlerta("Hora inválida", "Hora debe estar entre 00 y 23; minutos entre 00 y 59.", Alert.AlertType.WARNING);
+                    return null;
+                }
+
+                LocalDateTime fechaHora = LocalDateTime.of(datePicker.getValue(), java.time.LocalTime.of(horaVal, minVal));
+                if (fechaHora.isBefore(LocalDateTime.now())) {
+                    mostrarAlerta("Fecha inválida", "La fecha y hora seleccionadas ya pasaron.", Alert.AlertType.WARNING);
+                    return null;
+                }
+                List<String> nombres = seleccionados.stream().map(ProyectoAutomatizacion::getNombre).collect(Collectors.toList());
+                String nombreTarea = txtNombre.getText() == null || txtNombre.getText().trim().isEmpty() ? "Tarea " + (programadorTareas.listarTareas().size()+1) : txtNombre.getText().trim();
+                TareaProgramada tarea = new TareaProgramada(nombreTarea, nombres, fechaHora);
+                tarea.setModo(rbCsv.isSelected() ? TareaProgramada.Modo.CSV_ONLY : TareaProgramada.Modo.EXEC_AND_REPORT);
+                return tarea;
             }
             return null;
         });
 
-        Optional<javafx.util.Pair<List<ProyectoAutomatizacion>, Integer>> resultado = dialog.showAndWait();
-        resultado.ifPresent(pair -> {
-            proyectosAutomatizados = new ArrayList<>(pair.getKey());
-            int intervaloMinutos = pair.getValue();
-
-            iniciarAutomatizacion(intervaloMinutos);
+        Optional<TareaProgramada> res = dialog.showAndWait();
+        res.ifPresent(tarea -> {
+            programadorTareas.agregarTarea(tarea);
+            agregarLog("🗓️ Tarea programada: " + tarea.getNombre() + " → " + tarea.getFechaHora().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) + " (" + tarea.getProyectos().size() + " proyectos)");
+            mostrarAlerta("Programada", "La tarea fue añadida correctamente.", Alert.AlertType.INFORMATION);
         });
     }
 
@@ -3572,23 +3737,88 @@ public class ControladorPrincipal {
      * Alterna entre vista compacta (solo proyectos seleccionados) y vista normal (todos los proyectos)
      */
     private void alternarVistaCompacta() {
-        vistaCompacta = !vistaCompacta;
-        
+        aplicarEstadoVistaCompacta(!vistaCompacta, true);
+    }
+
+    /**
+     * Aplica el estado de vista compacta (sincroniza UI) y opcionalmente guarda la preferencia.
+     */
+    private void aplicarEstadoVistaCompacta(boolean activar, boolean guardar) {
+        vistaCompacta = activar;
+
         if (vistaCompacta) {
-            // Activar vista compacta: mostrar solo proyectos seleccionados
             proyectosFiltrados.setPredicate(p -> p.isSeleccionado());
             btnVistaCompacta.setStyle("-fx-background-color: #FF5722; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVistaCompacta.setText("📋 Expandir Vista");
             agregarLog("✓ Vista compacta ACTIVADA - Mostrando solo proyectos seleccionados");
         } else {
-            // Desactivar vista compacta: mostrar todos los proyectos
             proyectosFiltrados.setPredicate(p -> true);
             btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVistaCompacta.setText("📦 Vista Compacta");
             agregarLog("✓ Vista compacta DESACTIVADA - Mostrando todos los proyectos");
         }
-        
+
         tablaProyectos.refresh();
+
+        if (guardar) {
+            guardarPreferencias();
+        }
+    }
+
+    private static final String PREF_FILE = System.getProperty("user.home") + File.separator + ".orquestador.properties";
+
+    private void cargarPreferencias() {
+        try {
+            File f = new File(PREF_FILE);
+            if (!f.exists()) return;
+            Properties props = new Properties();
+            try (FileInputStream fis = new FileInputStream(f)) {
+                props.load(fis);
+            }
+            String v = props.getProperty("vistaCompacta");
+            if (v != null && v.equalsIgnoreCase("true")) {
+                // Aplicar sin sobrescribir el fichero (guardar=false)
+                aplicarEstadoVistaCompacta(true, false);
+            }
+            String disabled = props.getProperty("proyectosDeshabilitados");
+            if (disabled != null && !disabled.trim().isEmpty()) {
+                String[] parts = disabled.split(";;");
+                for (String s : parts) {
+                    String t = s.trim();
+                    if (!t.isEmpty()) proyectosDeshabilitados.add(t);
+                }
+            }
+        } catch (Exception e) {
+            // No interrumpir la aplicación por un error en preferencias
+            System.out.println("Advertencia: no se pudieron cargar preferencias: " + e.getMessage());
+        }
+    }
+
+    private void guardarPreferencias() {
+        try {
+            Properties props = new Properties();
+            props.setProperty("vistaCompacta", Boolean.toString(vistaCompacta));
+            String joined = String.join(";;", proyectosDeshabilitados);
+            props.setProperty("proyectosDeshabilitados", joined);
+            File f = new File(PREF_FILE);
+            try (FileOutputStream fos = new FileOutputStream(f)) {
+                props.store(fos, "Orquestador preferencias");
+            }
+        } catch (Exception e) {
+            System.out.println("Advertencia: no se pudieron guardar preferencias: " + e.getMessage());
+        }
+    }
+
+    private boolean isProyectoDeshabilitado(String nombre) {
+        if (nombre == null) return false;
+        return proyectosDeshabilitados.contains(nombre);
+    }
+
+    private void setProyectoDeshabilitado(String nombre, boolean deshabilitado) {
+        if (nombre == null) return;
+        if (deshabilitado) proyectosDeshabilitados.add(nombre);
+        else proyectosDeshabilitados.remove(nombre);
+        guardarPreferencias();
     }
     
     /**
