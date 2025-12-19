@@ -13,8 +13,10 @@ import java.util.function.Consumer;
  */
 public class EjecutorAutomatizaciones {
 
-    private boolean ejecutando = false;
-    private Process procesoActual;
+    private volatile boolean ejecutando = false;
+    private volatile Process procesoActual;
+    private volatile Thread hiloActual;
+    private volatile ProyectoAutomatizacion proyectoActual;
 
     /**
      * Ejecuta un proyecto de automatizacin en una ventana CMD maximizada
@@ -23,12 +25,22 @@ public class EjecutorAutomatizaciones {
                                   Consumer<String> logCallback,
                                   Runnable onFinish) {
 
+        synchronized (this) {
+            if (ejecutando) {
+                if (logCallback != null) logCallback.accept("Ya hay una ejecución en curso. Espera o cancela la ejecución actual.");
+                return;
+            }
+            ejecutando = true;
+            proyectoActual = proyecto;
+        }
+
         proyecto.setEstado(EstadoEjecucion.EJECUTANDO);
         proyecto.setUltimaEjecucion(LocalDateTime.now());
 
         long inicio = System.currentTimeMillis();
 
         new Thread(() -> {
+            hiloActual = Thread.currentThread();
             try {
                 // Limpiar procesos antes de ejecutar
                 limpiarProcesos(logCallback);
@@ -43,23 +55,27 @@ public class EjecutorAutomatizaciones {
                 File markerFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".done");
                 if (markerFile.exists()) markerFile.delete();
 
-                // Ejecutar en CMD maximizado - CAMBIO CRTICO: usar /wait para que espere
+                // Ejecutar en CMD maximizado - usar /wait para que espere
                 ProcessBuilder pb = new ProcessBuilder(
                     "cmd.exe", "/c", "start", "\"" + proyecto.getNombre() + "\"", "/wait", "/max", 
                     "cmd.exe", "/c", scriptTemp.getAbsolutePath() + " & echo DONE > \"" + markerFile.getAbsolutePath() + "\""
                 );
                 pb.directory(new File(proyecto.getRuta()));
 
-                logCallback.accept(" Ejecutando: " + proyecto.getNombre());
-                logCallback.accept(" Ruta: " + proyecto.getRuta());
+                if (logCallback != null) {
+                    logCallback.accept(" Ejecutando: " + proyecto.getNombre());
+                    logCallback.accept(" Ruta: " + proyecto.getRuta());
+                }
 
                 procesoActual = pb.start();
+                // Registrar proceso en el registry para asegurar cierre global
+                com.orquestador.servicio.ProcessRegistry.getInstance().register(procesoActual);
                 
                 // Esperar a que el proceso termine
                 int exitCode = procesoActual.waitFor();
                 
-                // Esperar tambin a que aparezca el archivo marker (confirma que el script termin)
-                int maxWait = 300; // 5 minutos mximo
+                // Esperar tambien a que aparezca el archivo marker (confirma que el script termino)
+                int maxWait = 300; // 5 minutos maximo
                 int waited = 0;
                 while (!markerFile.exists() && waited < maxWait) {
                     Thread.sleep(1000);
@@ -78,38 +94,49 @@ public class EjecutorAutomatizaciones {
                     exitCodeFile.delete();
                 }
 
-                // Calcular duracin
+                // Calcular duracion
                 long fin = System.currentTimeMillis();
                 int duracion = (int) ((fin - inicio) / 1000);
                 proyecto.setDuracionSegundos(duracion);
 
-                // Actualizar estado segn resultado
+                // Actualizar estado segun resultado
                 if (exitCode == 0) {
                     proyecto.setEstado(EstadoEjecucion.EXITOSO);
-                    logCallback.accept(" " + proyecto.getNombre() + " - EXITOSO (" + duracion + "s)");
+                    if (logCallback != null) logCallback.accept(" " + proyecto.getNombre() + " - EXITOSO (" + duracion + "s)");
                 } else {
                     proyecto.setEstado(EstadoEjecucion.FALLIDO);
                     proyecto.setMensajeError("Exit code: " + exitCode);
-                    logCallback.accept(" " + proyecto.getNombre() + " - FALLIDO (" + duracion + "s)");
+                    if (logCallback != null) logCallback.accept(" " + proyecto.getNombre() + " - FALLIDO (" + duracion + "s)");
                 }
 
                 // GENERAR LOG DESPUÉS DE LA EJECUCIÓN con los reportes de Maven/Newman
                 generarLogDeReportes(proyecto, exitCode, duracion);
 
-                // Limpiar despus de ejecutar
+                // Limpiar despues de ejecutar
                 scriptTemp.delete();
                 markerFile.delete();
                 limpiarProcesos(logCallback);
 
             } catch (InterruptedException e) {
-                proyecto.setEstado(EstadoEjecucion.CANCELADO);
-                logCallback.accept(" " + proyecto.getNombre() + " - CANCELADO");
+                // Hilo interrumpido: intentar finalizar procesos y marcar cancelado
+                if (proyecto != null) proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                if (logCallback != null) logCallback.accept(" " + proyecto.getNombre() + " - CANCELADO");
+                killProcessTree(logCallback);
             } catch (Exception e) {
-                proyecto.setEstado(EstadoEjecucion.FALLIDO);
-                proyecto.setMensajeError(e.getMessage());
-                logCallback.accept(" Error: " + e.getMessage());
+                if (proyecto != null) proyecto.setEstado(EstadoEjecucion.FALLIDO);
+                if (proyecto != null) proyecto.setMensajeError(e.getMessage());
+                if (logCallback != null) logCallback.accept(" Error: " + e.getMessage());
             } finally {
+                // Asegurar limpieza de estado
+                if (procesoActual != null) {
+                    com.orquestador.servicio.ProcessRegistry.getInstance().unregister(procesoActual);
+                }
                 procesoActual = null;
+                hiloActual = null;
+                synchronized (this) {
+                    ejecutando = false;
+                    proyectoActual = null;
+                }
                 if (onFinish != null) {
                     onFinish.run();
                 }
@@ -326,8 +353,61 @@ public class EjecutorAutomatizaciones {
      * Detiene la ejecucin actual
      */
     public void detener() {
-        if (procesoActual != null && procesoActual.isAlive()) {
-            procesoActual.destroy();
+        // Interrumpir el hilo de ejecución si existe
+        try {
+            Thread t = hiloActual;
+            if (t != null && t.isAlive()) {
+                t.interrupt();
+            }
+
+            // Forzar cierre del proceso y su árbol de hijos
+            killProcessTree(null);
+
+            // Asegurar que el registry quede vacío (esperar un máximo)
+            com.orquestador.servicio.ProcessRegistry registry = com.orquestador.servicio.ProcessRegistry.getInstance();
+            registry.killAll();
+            registry.waitForEmpty(10_000);
+
+            // Marcar proyecto como cancelado si aplica, pero NO cambiar el flag `ejecutando` aquí.
+            // El controlador de UI será responsable de marcar `ejecutando=false` cuando verifique
+            // que todos los procesos del registry han finalizado.
+            synchronized (this) {
+                if (proyectoActual != null) {
+                    proyectoActual.setEstado(EstadoEjecucion.CANCELADO);
+                }
+                proyectoActual = null;
+            }
+        } catch (Exception e) {
+            // No interrumpir la ejecución por errores al intentar detener
+        }
+    }
+
+    /**
+     * Intenta finalizar el proceso actual y todo su árbol de procesos (Windows: taskkill fallback).
+     */
+    private void killProcessTree(Consumer<String> logCallback) {
+        try {
+            if (procesoActual == null) return;
+
+            ProcessHandle ph = procesoActual.toHandle();
+            long pid = ph.pid();
+
+            // Primero intentar destruir los descendientes
+            ph.descendants().forEach(h -> {
+                try { h.destroyForcibly(); } catch (Exception ex) { }
+            });
+
+            // Intentar destruir el proceso principal
+            try { ph.destroyForcibly(); } catch (Exception ex) { }
+
+            // Fallback: usar taskkill por si queda algo
+            try {
+                new ProcessBuilder("taskkill", "/PID", String.valueOf(pid), "/F", "/T").start().waitFor();
+            } catch (Exception ex) { }
+
+            if (logCallback != null) logCallback.accept(" Procesos terminados (PID " + pid + ")");
+        } catch (Exception e) {
+            if (logCallback != null) logCallback.accept(" Error al forzar cierre de procesos: " + e.getMessage());
         }
     }
 

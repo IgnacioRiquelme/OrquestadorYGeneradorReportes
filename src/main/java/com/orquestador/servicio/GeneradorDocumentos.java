@@ -610,41 +610,49 @@ public class GeneradorDocumentos {
             ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-Command", script);
             pb.redirectErrorStream(true);
             Process process = pb.start();
+            // Registrar proceso para seguimiento global
+            com.orquestador.servicio.ProcessRegistry.getInstance().register(process);
 
-            // Leer salida en background para evitar bloqueos por buffers llenos
-            StringBuilder output = new StringBuilder();
-            Thread outReader = new Thread(() -> {
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        output.append(line).append(System.lineSeparator());
-                    }
-                } catch (IOException ignored) {}
-            });
-            outReader.setDaemon(true);
-            outReader.start();
+            try {
+                // Leer salida en background para evitar bloqueos por buffers llenos
+                StringBuilder output = new StringBuilder();
+                Thread outReader = new Thread(() -> {
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            output.append(line).append(System.lineSeparator());
+                        }
+                    } catch (IOException ignored) {}
+                });
+                outReader.setDaemon(true);
+                outReader.start();
 
-            // Esperar con timeout razonable para evitar bloqueo indefinido
-            boolean finished = process.waitFor(60, TimeUnit.SECONDS);
-            if (!finished) {
-                // Timeout: forzar cierre y reportar
-                process.destroyForcibly();
-                proyecto.setMensajeError("Timeout al convertir a PDF (Word COM no respondió)");
-                System.out.println("[DEBUG] Conversión a PDF: TIMEOUT\n" + output.toString());
+                // Esperar con timeout razonable para evitar bloqueo indefinido
+                boolean finished = process.waitFor(60, TimeUnit.SECONDS);
+                if (!finished) {
+                    // Timeout: forzar cierre y reportar
+                    process.destroyForcibly();
+                    proyecto.setMensajeError("Timeout al convertir a PDF (Word COM no respondió)");
+                    System.out.println("[DEBUG] Conversión a PDF: TIMEOUT\n" + output.toString());
+                    return null;
+                }
+
+                int exitCode = process.exitValue();
+
+                // Asegurar que el lector de salida termine
+                try { outReader.join(2000); } catch (InterruptedException ignored) {}
+
+                if (exitCode == 0 && archivoPdf.exists()) {
+                    return rutaPdf;
+                }
+
+                System.out.println("[DEBUG] Conversión a PDF finalizada con exitCode=" + exitCode + "\nSalida:\n" + output.toString());
                 return null;
+            } finally {
+                // Asegurar desregistro del proceso
+                com.orquestador.servicio.ProcessRegistry.getInstance().unregister(process);
+                try { process.destroyForcibly(); } catch (Exception ex) { }
             }
-
-            int exitCode = process.exitValue();
-
-            // Asegurar que el lector de salida termine
-            try { outReader.join(2000); } catch (InterruptedException ignored) {}
-
-            if (exitCode == 0 && archivoPdf.exists()) {
-                return rutaPdf;
-            }
-
-            System.out.println("[DEBUG] Conversión a PDF finalizada con exitCode=" + exitCode + "\nSalida:\n" + output.toString());
-            return null;
             
         } catch (Exception e) {
             e.printStackTrace();

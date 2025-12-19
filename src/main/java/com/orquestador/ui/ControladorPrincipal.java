@@ -2212,10 +2212,45 @@ public class ControladorPrincipal {
     }
     
     private void cancelarEjecucion() {
-        ejecutando = false;
+        // No desactivar 'ejecutando' aquí: esperar confirmación de cierre antes de permitir nuevas ejecuciones
+        agregarLog("🚫 EJECUCIÓN CANCELADA - Iniciando detención. Verificando cierre de procesos...");
         ejecutor.detener();
-        agregarLog("🚫 EJECUCIÓN CANCELADA - Deteniendo proceso actual y cancelando ejecuciones siguientes");
-        finalizarEjecucion();
+
+        // Ejecutar la verificación de cierre en background para no bloquear la UI
+        new Thread(() -> {
+            com.orquestador.servicio.ProcessRegistry registry = com.orquestador.servicio.ProcessRegistry.getInstance();
+            long start = System.currentTimeMillis();
+            long timeout = 15_000; // 15s máximo para intentar limpieza
+            boolean ok = false;
+
+            while (System.currentTimeMillis() - start < timeout) {
+                if (!ejecutor.isEjecutando() && registry.isEmpty()) {
+                    ok = true;
+                    break;
+                }
+                // Intentar forzar cierre leve si aún hay procesos
+                if (!registry.isEmpty()) {
+                    registry.killAll();
+                }
+                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+
+            if (!ok) {
+                // Último intento forzado
+                registry.killAll();
+            }
+
+            // Ahora notificar en la UI que ya se puede ejecutar de nuevo
+            Platform.runLater(() -> {
+                if (!registry.isEmpty()) {
+                    agregarLog("⚠️ Algunos procesos no pudieron cerrarse correctamente, se forzó cierre final.");
+                } else {
+                    agregarLog("✅ Todos los procesos finalizaron. Listo para nueva ejecución.");
+                }
+                // Restaurar estado UI
+                finalizarEjecucion();
+            });
+        }).start();
     }
     
     private void abrirLogEjecucion(ProyectoAutomatizacion proyecto) {

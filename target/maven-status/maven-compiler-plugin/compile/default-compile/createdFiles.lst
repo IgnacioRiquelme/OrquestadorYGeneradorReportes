@@ -15,6 +15,7 @@ com\orquestador\modelo\ProyectoAutomatizacion$EstadoEjecucion.class
 com\orquestador\modelo\ProyectoAutomatizacion$TipoEjecucion.class
 com\orquestador\servicio\CSVGeneradorResultados.class
 com\orquestador\ui\ControladorPrincipal.class
+com\orquestador\servicio\ProcessRegistry.class
 com\orquestador\servicio\ProgramadorTareas.class
 com\orquestador\ui\ControladorPrincipal$3.class
 com\orquestador\servicio\ProgramadorTareas$2.class
