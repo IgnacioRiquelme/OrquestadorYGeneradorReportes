@@ -186,7 +186,8 @@ public class ControladorPrincipal {
                         try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
                     }
 
-                    for (ProyectoAutomatizacion p : porEjecutar) p.setSeleccionado(true);
+                    // NO modificamos el estado global de selección para no contaminar otras empresas.
+                    // generarInformes() leerá los proyectos de porEjecutar directamente.
                     tablaProyectos.refresh();
                     Platform.runLater(() -> generarInformes());
 
@@ -3624,11 +3625,15 @@ public class ControladorPrincipal {
         String filtroEmpresa = cboFiltroEmpresa != null ? cboFiltroEmpresa.getValue() : null;
         String filtroArea = cboFiltroArea != null ? cboFiltroArea.getValue() : null;
         String filtroVpn = cboFiltroVPN != null ? cboFiltroVPN.getValue() : null;
+        boolean soloSeleccionados = vistaCompacta; // respeta la vista compacta de la empresa en curso
 
         proyectosFiltrados.setPredicate(p -> {
             boolean empresaOk = true;
             boolean areaOk = true;
             boolean vpnOk = true;
+            boolean seleccionOk = true;
+
+            // Filtro de empresa: cada empresa es un universo independiente
             if (filtroEmpresa != null && !filtroEmpresa.equals("Todas")) {
                 empresaOk = p.getEmpresa() != null && p.getEmpresa().equals(filtroEmpresa);
             }
@@ -3653,7 +3658,11 @@ public class ControladorPrincipal {
                         vpnOk = true;
                 }
             }
-            return empresaOk && areaOk && vpnOk;
+            // Vista compacta: SOLO proyectos seleccionados de la empresa en filtro
+            if (soloSeleccionados) {
+                seleccionOk = p.isSeleccionado();
+            }
+            return empresaOk && areaOk && vpnOk && seleccionOk;
         });
 
         actualizarEstadisticas();
@@ -3672,13 +3681,10 @@ public class ControladorPrincipal {
         // Guardar el estado limpio
         guardarProyectos();
 
-        // Resetear filtros para mostrar todos los proyectos
-        proyectosFiltrados.setPredicate(p -> true);
-
         // Forzar actualización visual de la tabla
         tablaProyectos.refresh();
 
-        // Aplicar filtro actual y actualizar estadísticas
+        // Aplicar filtro actual (respeta empresa, área, VPN y vista compacta) y actualizar estadísticas
         aplicarFiltro();
         actualizarEstadisticas();
 
@@ -6175,22 +6181,23 @@ public class ControladorPrincipal {
 
     /**
      * Aplica el estado de vista compacta (sincroniza UI) y opcionalmente guarda la preferencia.
+     * Delega SIEMPRE a aplicarFiltro() para que el filtro de empresa se respete.
      */
     private void aplicarEstadoVistaCompacta(boolean activar, boolean guardar) {
         vistaCompacta = activar;
 
         if (vistaCompacta) {
-            proyectosFiltrados.setPredicate(p -> p.isSeleccionado());
             btnVistaCompacta.setStyle("-fx-background-color: #FF5722; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVistaCompacta.setText("📋 Expandir Vista");
-            agregarLog("✓ Vista compacta ACTIVADA - Mostrando solo proyectos seleccionados");
+            agregarLog("✓ Vista compacta ACTIVADA - Mostrando solo proyectos seleccionados de la empresa actual");
         } else {
-            proyectosFiltrados.setPredicate(p -> true);
             btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVistaCompacta.setText("📦 Vista Compacta");
             agregarLog("✓ Vista compacta DESACTIVADA - Mostrando todos los proyectos");
         }
 
+        // Siempre reconstruir el predicado combinado (empresa + área + vpn + selección)
+        aplicarFiltro();
         tablaProyectos.refresh();
 
         if (guardar) {
@@ -6220,17 +6227,22 @@ public class ControladorPrincipal {
             }
             
             // SEGUNDO: Cargar proyectos seleccionados ANTES de activar vista compacta
+            // La clave guardada es "empresa::nombre" para evitar mezcla entre empresas.
+            // Para compatibilidad con preferencias antiguas (solo nombre) se acepta también el formato viejo.
             String seleccionados = props.getProperty("proyectosSeleccionados");
             if (seleccionados != null && !seleccionados.trim().isEmpty()) {
-                String[] parts = seleccionados.split(";;");
-                Set<String> nombresSeleccionados = new java.util.HashSet<>();
+                String[] parts = seleccionados.split(";");
+                Set<String> clavesSeleccionadas = new java.util.HashSet<>();
                 for (String s : parts) {
                     String t = s.trim();
-                    if (!t.isEmpty()) nombresSeleccionados.add(t);
+                    if (!t.isEmpty()) clavesSeleccionadas.add(t);
                 }
-                // Aplicar la selección a los proyectos cargados
+                // Aplicar la selección a los proyectos cargados respetando la empresa
                 for (ProyectoAutomatizacion proyecto : proyectos) {
-                    proyecto.setSeleccionado(nombresSeleccionados.contains(proyecto.getNombre()));
+                    String claveNueva  = (proyecto.getEmpresa() != null ? proyecto.getEmpresa() : "") + "::" + proyecto.getNombre();
+                    String claveVieja  = proyecto.getNombre(); // backward compat
+                    proyecto.setSeleccionado(clavesSeleccionadas.contains(claveNueva)
+                                          || clavesSeleccionadas.contains(claveVieja));
                 }
             }
             
@@ -6272,10 +6284,10 @@ public class ControladorPrincipal {
             // Guardar proyectos deshabilitados
             String joined = String.join(";;", proyectosDeshabilitados);
             props.setProperty("proyectosDeshabilitados", joined);
-            // Guardar proyectos seleccionados
+            // Guardar proyectos seleccionados con clave "empresa::nombre" para evitar mezcla entre empresas
             String seleccionados = proyectos.stream()
                 .filter(ProyectoAutomatizacion::isSeleccionado)
-                .map(ProyectoAutomatizacion::getNombre)
+                .map(p -> (p.getEmpresa() != null ? p.getEmpresa() : "") + "::" + p.getNombre())
                 .collect(Collectors.joining(";;"));
             props.setProperty("proyectosSeleccionados", seleccionados);
             props.setProperty("empresasRegistradas", String.join(";;", empresasRegistradas));
