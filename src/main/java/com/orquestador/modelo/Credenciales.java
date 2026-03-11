@@ -26,6 +26,10 @@ public class Credenciales {
     @SerializedName("pasword2")
     private String pasword2 = "";
     
+    // Campo RUT para proyecto 17 (Corredores Generales BCI)
+    @SerializedName("rut")
+    private String rut = "";
+    
     // Campos para proyecto 18 (Corredores VIDA)
     @SerializedName("numeroTicket")
     private String numeroTicket = "";
@@ -58,6 +62,9 @@ public class Credenciales {
     
     public String getPasword2() { return pasword2; }
     public void setPasword2(String pasword2) { this.pasword2 = pasword2 != null ? pasword2.trim() : ""; }
+    
+    public String getRut() { return rut; }
+    public void setRut(String rut) { this.rut = rut != null ? rut.trim() : ""; }
     
     public String getNumeroTicket() { return numeroTicket; }
     public void setNumeroTicket(String numeroTicket) { this.numeroTicket = numeroTicket != null ? numeroTicket.trim() : ""; }

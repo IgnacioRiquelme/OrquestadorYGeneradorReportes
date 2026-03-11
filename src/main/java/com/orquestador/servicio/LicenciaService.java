@@ -1,181 +1,152 @@
 package com.orquestador.servicio;
 
-import com.google.gson.Gson;
+import com.orquestador.util.LicenseKeyUtil;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+import java.nio.file.*;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.Properties;
-import java.util.UUID;
 
 import javafx.application.Platform;
 import javafx.scene.control.Alert;
 import javafx.scene.control.TextInputDialog;
 
 /**
- * Servicio mínimo para activar/validar licencias contra el servidor local.
- * Persistencia en ~/.orquestador_license.properties
+ * Servicio de licencias completamente OFFLINE.
+ * Valida claves firmadas con HMAC-SHA256 generadas por la App Maestra.
+ * No requiere conexion a ningun servidor.
+ *
+ * Persistencia: %USERPROFILE%\.orquestador_license.properties
+ *   - installationId  (derivado del hardware -- reproducible)
+ *   - licenseKey      (clave emitida por el administrador)
  */
 public class LicenciaService {
 
-    private static final String SERVER_URL = "http://localhost:3000";
-    private static final File LIC_FILE = new File(System.getProperty("user.home"), ".orquestador_license.properties");
-    private static final Gson gson = new Gson();
+    private static final Path LIC_FILE = Paths.get(
+            System.getProperty("user.home"), ".orquestador_license.properties");
 
     private String installationId;
-    private String token;
+    private String licenseKey;
 
     public LicenciaService() {
-        load();
-        if (installationId == null) {
-            installationId = generateInstallationId();
-            save();
+        cargar();
+        if (installationId == null || installationId.isBlank()) {
+            installationId = LicenseKeyUtil.generarInstallationId();
+            guardar();
         }
     }
 
-    private String generateInstallationId() {
-        return UUID.randomUUID().toString();
-    }
-
-    private void load() {
-        try {
-            if (!LIC_FILE.exists()) return;
-            Properties p = new Properties();
-            try (FileInputStream fis = new FileInputStream(LIC_FILE)) {
-                p.load(fis);
-            }
-            installationId = p.getProperty("installationId");
-            token = p.getProperty("token");
-        } catch (Exception e) {
-            // ignore
-        }
-    }
-
-    private void save() {
-        try {
-            Properties p = new Properties();
-            if (installationId != null) p.setProperty("installationId", installationId);
-            if (token != null) p.setProperty("token", token);
-            try (FileOutputStream fos = new FileOutputStream(LIC_FILE)) {
-                p.store(fos, "Orquestador licencia");
-            }
-        } catch (Exception e) {
-            // ignore
-        }
-    }
-
+    // Estado
     public boolean isActivated() {
-        return token != null && !token.trim().isEmpty();
+        if (licenseKey == null || licenseKey.isBlank()) return false;
+        return LicenseKeyUtil.validarClave(licenseKey, installationId).valida;
     }
 
-    public String getInstallationId() {
-        return installationId;
-    }
-
-    public boolean activateInteractive() {
-        final boolean[] result = {false};
-        // Run on JavaFX thread to show dialogs
-        Platform.runLater(() -> {
-            TextInputDialog dialog = new TextInputDialog();
-            dialog.setTitle("Activación requerida");
-            dialog.setHeaderText("Introduce el código de activación");
-            dialog.setContentText("Código:");
-
-            dialog.showAndWait().ifPresent(code -> {
-                try {
-                    boolean ok = activate(code.trim());
-                    if (ok) {
-                        Alert a = new Alert(Alert.AlertType.INFORMATION);
-                        a.setTitle("Activación correcta");
-                        a.setHeaderText(null);
-                        a.setContentText("La aplicación ha sido activada correctamente.");
-                        a.showAndWait();
-                        result[0] = true;
-                    } else {
-                        Alert a = new Alert(Alert.AlertType.ERROR);
-                        a.setTitle("Activación fallida");
-                        a.setHeaderText(null);
-                        a.setContentText("Código inválido o error al activar.");
-                        a.showAndWait();
-                        result[0] = false;
-                    }
-                } catch (Exception e) {
-                    Alert a = new Alert(Alert.AlertType.ERROR);
-                    a.setTitle("Error");
-                    a.setHeaderText(null);
-                    a.setContentText("Error al comunicarse con el servidor: " + e.getMessage());
-                    a.showAndWait();
-                    result[0] = false;
-                }
-            });
-        });
-
-        // Wait until dialog handled (simple spin) — acceptable here because it's a one-time interactive flow
-        while (Platform.isImplicitExit() == false && !result[0] && !isActivated()) {
-            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
-            // If user closed dialog without entering code, break to allow user to quit
-            // But keep loop short — in practice user will enter code or close app
-            break;
+    public LicenseKeyUtil.ResultadoValidacion getValidacion() {
+        if (licenseKey == null || licenseKey.isBlank()) {
+            return new LicenseKeyUtil.ResultadoValidacion(
+                false, "No hay clave de licencia registrada", null, null, null);
         }
-
-        return isActivated();
+        return LicenseKeyUtil.validarClave(licenseKey, installationId);
     }
 
-    public boolean activate(String code) throws Exception {
-        URL url = new URL(SERVER_URL + "/activate");
-        HttpURLConnection con = (HttpURLConnection) url.openConnection();
-        con.setRequestMethod("POST");
-        con.setRequestProperty("Content-Type", "application/json;charset=UTF-8");
-        con.setDoOutput(true);
+    public String getInstallationId() { return installationId; }
+    public String getLicenseKey()     { return licenseKey; }
 
-        String body = gson.toJson(new java.util.HashMap<String, String>() {{ put("code", code); put("installationId", installationId); }});
-        byte[] out = body.getBytes(StandardCharsets.UTF_8);
-        con.getOutputStream().write(out);
-
-        int status = con.getResponseCode();
-        if (status == 200) {
-            java.io.InputStream is = con.getInputStream();
-            java.util.Scanner s = new java.util.Scanner(is).useDelimiter("\\A");
-            String resp = s.hasNext() ? s.next() : "";
-            java.util.Map map = gson.fromJson(resp, java.util.Map.class);
-            Object t = map.get("token");
-            if (t != null) {
-                token = t.toString();
-                save();
-                return true;
-            }
-        }
-        return false;
-    }
-
-    public boolean checkStatus() {
-        try {
-            URL url = new URL(SERVER_URL + "/status");
-            HttpURLConnection con = (HttpURLConnection) url.openConnection();
-            con.setRequestMethod("POST");
-            con.setRequestProperty("Content-Type", "application/json;charset=UTF-8");
-            con.setDoOutput(true);
-            String body = gson.toJson(new java.util.HashMap<String, String>() {{ put("installationId", installationId); }});
-            con.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
-            int status = con.getResponseCode();
-            if (status == 200) {
-                java.util.Scanner s = new java.util.Scanner(con.getInputStream()).useDelimiter("\\A");
-                String resp = s.hasNext() ? s.next() : "";
-                java.util.Map map = gson.fromJson(resp, java.util.Map.class);
-                Object st = map.get("status");
-                if ("active".equals(st)) return true;
-                if ("revoked".equals(st)) {
-                    token = null; save(); return false;
-                }
-            }
-        } catch (Exception e) {
-            // network error — assume offline; permit running (client handles grace period separately)
+    // Activacion
+    public boolean activate(String clave) {
+        if (clave == null || clave.isBlank()) return false;
+        LicenseKeyUtil.ResultadoValidacion r = LicenseKeyUtil.validarClave(clave.trim(), installationId);
+        if (r.valida) {
+            licenseKey = clave.trim();
+            guardar();
             return true;
         }
         return false;
     }
+
+    public boolean activateInteractive() {
+        final boolean[] resultado = {false};
+
+        Platform.runLater(() -> {
+            Alert infoId = new Alert(Alert.AlertType.INFORMATION);
+            infoId.setTitle("Activacion requerida");
+            infoId.setHeaderText("Para activar, envia el siguiente Installation ID al administrador:");
+            infoId.setContentText(installationId);
+            infoId.showAndWait();
+
+            TextInputDialog dlg = new TextInputDialog();
+            dlg.setTitle("Activar licencia");
+            dlg.setHeaderText("Ingresa la clave de activacion proporcionada por el administrador:");
+            dlg.setContentText("Clave:");
+            dlg.getEditor().setPrefColumnCount(50);
+
+            dlg.showAndWait().ifPresent(clave -> {
+                if (activate(clave)) {
+                    LicenseKeyUtil.ResultadoValidacion r = getValidacion();
+                    String expira = r.expiracion != null
+                        ? r.expiracion.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) : "N/A";
+                    Alert ok = new Alert(Alert.AlertType.INFORMATION);
+                    ok.setTitle("Activada correctamente");
+                    ok.setHeaderText("Licencia activada");
+                    ok.setContentText("Valida hasta: " + expira
+                        + (r.nombre != null ? "\nTitular: " + r.nombre : ""));
+                    ok.showAndWait();
+                    resultado[0] = true;
+                } else {
+                    LicenseKeyUtil.ResultadoValidacion r =
+                        LicenseKeyUtil.validarClave(clave, installationId);
+                    Alert err = new Alert(Alert.AlertType.ERROR);
+                    err.setTitle("Activacion fallida");
+                    err.setHeaderText("La clave no es valida");
+                    err.setContentText(r.mensajeError != null ? r.mensajeError : "Verifica la clave.");
+                    err.showAndWait();
+                }
+            });
+        });
+
+        long deadline = System.currentTimeMillis() + 120_000;
+        while (System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(300); } catch (InterruptedException e) { break; }
+            if (isActivated()) return true;
+        }
+        return isActivated();
+    }
+
+    public void revocarLocal() {
+        licenseKey = null;
+        guardar();
+    }
+
+    private void cargar() {
+        try {
+            if (!Files.exists(LIC_FILE)) return;
+            Properties p = new Properties();
+            try (InputStream is = new FileInputStream(LIC_FILE.toFile())) {
+                p.load(is);
+            }
+            installationId = p.getProperty("installationId");
+            licenseKey     = p.getProperty("licenseKey");
+        } catch (Exception e) {
+            System.err.println("[LicenciaService] Error al cargar: " + e.getMessage());
+        }
+    }
+
+    private void guardar() {
+        try {
+            Properties p = new Properties();
+            if (installationId != null) p.setProperty("installationId", installationId);
+            if (licenseKey     != null) p.setProperty("licenseKey",     licenseKey);
+            try (OutputStream os = new FileOutputStream(LIC_FILE.toFile())) {
+                p.store(os, "Orquestador Automatizaciones - Licencia");
+            }
+        } catch (Exception e) {
+            System.err.println("[LicenciaService] Error al guardar: " + e.getMessage());
+        }
+    }
+
+    // Compatibilidad con llamadas existentes
+    public boolean checkStatus() { return isActivated(); }
 }

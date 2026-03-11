@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
  */
 public class ProyectoAutomatizacion {
     private String nombre;
+    private String empresa;
     private String ruta;
     private String area; // Clientes, Comercial, Integraciones, Siniestros
     private TipoVPN tipoVPN; // SIN_VPN, VPN_BCI, VPN_CLIP
@@ -17,6 +18,11 @@ public class ProyectoAutomatizacion {
     private Integer duracionSegundos;
     private String mensajeError;
     private String rutaLogEjecucion; // Ruta del archivo .log de la última ejecución
+
+    // Campos para RETRY - reintento de ejecución hasta 3 veces
+    private boolean retryHabilitado = false; // Si es true, permite reintentos (por defecto deshabilitado)
+    private int intentoActual = 0; // Intento actual (0 = no iniciado, 1 = primer intento, 2 = segundo, 3 = tercero)
+    private int totalReintentos = 3; // Total de reintentos permitidos
 
     // Campos para generacion de informes
     private String rutaImagenes;
@@ -96,6 +102,7 @@ public class ProyectoAutomatizacion {
 
     // Constructor
     public ProyectoAutomatizacion() {
+        this.empresa = "BCI Seguros";
         this.seleccionado = false; // Por defecto NO seleccionado
         this.estado = EstadoEjecucion.PENDIENTE;
         this.tipoVPN = TipoVPN.SIN_VPN;
@@ -111,6 +118,11 @@ public class ProyectoAutomatizacion {
         this.tipoEjecucion = tipoEjecucion;
     }
 
+    public ProyectoAutomatizacion(String nombre, String empresa, String ruta, String area, TipoVPN tipoVPN, TipoEjecucion tipoEjecucion) {
+        this(nombre, ruta, area, tipoVPN, tipoEjecucion);
+        this.empresa = (empresa == null || empresa.trim().isEmpty()) ? "BCI Seguros" : empresa.trim();
+    }
+
     // Getters y Setters
     public String getNombre() {
         return nombre;
@@ -122,6 +134,14 @@ public class ProyectoAutomatizacion {
 
     public String getRuta() {
         return ruta;
+    }
+
+    public String getEmpresa() {
+        return empresa;
+    }
+
+    public void setEmpresa(String empresa) {
+        this.empresa = (empresa == null || empresa.trim().isEmpty()) ? "BCI Seguros" : empresa.trim();
     }
 
     public void setRuta(String ruta) {
@@ -261,6 +281,50 @@ public class ProyectoAutomatizacion {
 
     public void setInformes(java.util.List<ConfiguracionInforme> informes) {
         this.informes = informes;
+    }
+
+    // Getters y Setters para RETRY
+    public boolean isRetryHabilitado() {
+        return retryHabilitado;
+    }
+
+    public void setRetryHabilitado(boolean retryHabilitado) {
+        this.retryHabilitado = retryHabilitado;
+    }
+
+    public int getIntentoActual() {
+        return intentoActual;
+    }
+
+    public void setIntentoActual(int intentoActual) {
+        this.intentoActual = intentoActual;
+    }
+
+    public int getTotalReintentos() {
+        return totalReintentos;
+    }
+
+    public void setTotalReintentos(int totalReintentos) {
+        this.totalReintentos = totalReintentos;
+    }
+
+    /**
+     * Obtiene la representación de reintentos en formato "X/3"
+     * @return String con formato "X/3" si hay reintentos, "" si no
+     */
+    public String getFormatoRetry() {
+        if (!retryHabilitado || intentoActual == 0) {
+            return "";
+        }
+        return intentoActual + "/" + totalReintentos;
+    }
+
+    /**
+     * Resetea los contadores de reintentos
+     */
+    public void resetearReintentos() {
+        this.intentoActual = 0;
+        this.retryHabilitado = false;
     }
 }
 

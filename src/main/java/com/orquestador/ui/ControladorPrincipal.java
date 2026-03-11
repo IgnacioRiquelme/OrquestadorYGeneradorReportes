@@ -9,6 +9,10 @@ import com.orquestador.servicio.GeneradorDocumentos;
 import com.orquestador.servicio.ProgramadorTareas;
 import com.orquestador.modelo.TareaProgramada;
 import com.orquestador.util.GestorConfiguracion;
+import com.orquestador.util.GestorConfiguracionCorreo;
+import com.orquestador.util.GestorExportImport;
+import com.orquestador.modelo.ConfiguracionCorreo;
+import com.orquestador.servicio.EnviadorCorreoOutlook;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -57,6 +61,14 @@ public class ControladorPrincipal {
     private TextArea logArea;
     private Label lblEstadisticas;
     private Button btnEjecutarSeleccionados, btnCancelarEjecucion, btnVerCapturas, btnGenerarInformes, btnAgregar, btnEliminar, btnAutomatizar;
+    private Button btnLicencia;
+    private Button btnInformeExcel;
+    private Button btnConfigCorreo;
+    /** Configuraciones de correo por área, cargadas al inicio y persistidas en AppData */
+    private List<ConfiguracionCorreo> configsCorreo = GestorConfiguracionCorreo.cargar();
+    private static final String EMPRESA_DEFAULT = "BCI Seguros";
+    private ComboBox<String> cboFiltroEmpresa;
+    private final java.util.Set<String> empresasRegistradas = new java.util.LinkedHashSet<>();
     private ComboBox<String> cboFiltroArea;
     private ComboBox<String> cboFiltroVPN;
     private EjecutorAutomatizaciones ejecutor;
@@ -65,6 +77,10 @@ public class ControladorPrincipal {
     private boolean automatizacionProgramada = false;
     private java.util.Timer timerAutomatizacion;
     private List<ProyectoAutomatizacion> proyectosAutomatizados;
+    private List<ProyectoAutomatizacion> proyectosEnEjecucion = new ArrayList<>(); // Lista de proyectos en ejecución actual
+    private Thread threadEjecucion = null; // Thread actual de ejecución para poder cancelarlo
+    private boolean retryGlobalHabilitado = false;
+    private volatile boolean cancelRequested = false;
     
     // Variables para vista compacta y tiempo total de ejecución
     private boolean vistaCompacta = false;
@@ -80,6 +96,9 @@ public class ControladorPrincipal {
     public ControladorPrincipal() {
         ejecutor = new EjecutorAutomatizaciones();
         proyectos = FXCollections.observableArrayList(GestorConfiguracion.cargarProyectos());
+        normalizarEmpresasEnProyectos();
+        empresasRegistradas.add(EMPRESA_DEFAULT);
+        empresasRegistradas.addAll(obtenerEmpresasDesdeProyectos());
 
         // Crear lista filtrada
         proyectosFiltrados = new FilteredList<>(proyectos, p -> true);
@@ -112,22 +131,26 @@ public class ControladorPrincipal {
         // Cargar preferencias (estado de vista compacta) después de inicializar la UI
         cargarPreferencias();
         // Verificar activación/licencia en primer arranque
-        try {
-            com.orquestador.servicio.LicenciaService licencia = new com.orquestador.servicio.LicenciaService();
-            if (!licencia.isActivated()) {
-                boolean ok = licencia.activateInteractive();
-                if (!ok) {
-                    // Usuario no activó o error: salir
-                    System.err.println("Aplicación no activada. Saliendo.");
-                    System.exit(0);
+        // Solo requerir licencia si existe el archivo .orquestador_license_required en el home del usuario
+        java.io.File licFlag = new java.io.File(System.getProperty("user.home"), ".orquestador_license_required");
+        if (licFlag.exists()) {
+            try {
+                com.orquestador.servicio.LicenciaService licencia = new com.orquestador.servicio.LicenciaService();
+                if (!licencia.isActivated()) {
+                    boolean ok = licencia.activateInteractive();
+                    if (!ok) {
+                        // Usuario no activó o error: salir
+                        System.err.println("Aplicación no activada. Saliendo.");
+                        throw new IllegalStateException("Aplicación no activada por el usuario.");
+                    }
+                } else {
+                    // Chequear estado remoto (no bloqueante)
+                    new Thread(() -> { licencia.checkStatus(); }).start();
                 }
-            } else {
-                // Chequear estado remoto (no bloqueante)
-                new Thread(() -> { licencia.checkStatus(); }).start();
+            } catch (Exception e) {
+                // Si falla la verificación, permitir ejecución local (modo offline)
+                System.err.println("Advertencia: no se pudo verificar licencia: " + e.getMessage());
             }
-        } catch (Exception e) {
-            // Si falla la verificación, permitir ejecución local (modo offline)
-            System.err.println("Advertencia: no se pudo verificar licencia: " + e.getMessage());
         }
         // Iniciar gestor de tareas programadas
         programadorTareas = new ProgramadorTareas();
@@ -149,25 +172,73 @@ public class ControladorPrincipal {
                 return;
             }
 
-            // Modo EXEC_AND_REPORT: ejecutar y luego generar informes para los exitosos
+            // Modo EXEC_AND_REPORT y EXEC_WITH_EMAIL: ejecutar y luego generar informes
             if (!porEjecutar.isEmpty()) {
-                agregarLog("\n⏰ EJECUCIÓN PROGRAMADA: " + porEjecutar.size() + " proyecto(s)");
-                // Lanzar ejecución
+                final boolean conCorreo = tarea.getModo() == TareaProgramada.Modo.EXEC_WITH_EMAIL;
+                final java.time.LocalDateTime fechaDesde = tarea.getFechaHora();
+
+                agregarLog("\n⏰ EJECUCIÓN PROGRAMADA" + (conCorreo ? " + CORREO" : "") + ": " + porEjecutar.size() + " proyecto(s)");
                 ejecutarProyectos(new ArrayList<>(porEjecutar));
 
-                // Iniciar hilo que espera a que termine la ejecución y luego genera informes
+                // Hilo que espera fin de ejecución, genera informes y (si aplica) envía correo
                 new Thread(() -> {
-                    // Esperar hasta que no esté ejecutando
                     while (ejecutando) {
                         try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
                     }
 
-                    // Marcar los proyectos objetivo como seleccionados para generación de informes
                     for (ProyectoAutomatizacion p : porEjecutar) p.setSeleccionado(true);
                     tablaProyectos.refresh();
-
-                    // Generar informes (usa el flujo existente)
                     Platform.runLater(() -> generarInformes());
+
+                    if (conCorreo) {
+                        // Esperar un poco para que los PDFs terminen de escribirse
+                        try { Thread.sleep(3000); } catch (InterruptedException e) { /* ignore */ }
+
+                        // Agrupar proyectos por área
+                        Map<String, List<ProyectoAutomatizacion>> porArea = new java.util.LinkedHashMap<>();
+                        for (ProyectoAutomatizacion p : porEjecutar) {
+                            String area = p.getArea() != null ? p.getArea() : "Sin Área";
+                            porArea.computeIfAbsent(area, k -> new ArrayList<>()).add(p);
+                        }
+
+                        for (Map.Entry<String, List<ProyectoAutomatizacion>> entry : porArea.entrySet()) {
+                            String area = entry.getKey();
+                            List<ProyectoAutomatizacion> proyArea = entry.getValue();
+
+                            java.util.Optional<ConfiguracionCorreo> cfgOpt =
+                                    GestorConfiguracionCorreo.buscarPorArea(configsCorreo, area);
+
+                            if (cfgOpt.isEmpty()) {
+                                Platform.runLater(() -> agregarLog(
+                                    "⚠ Sin configuración de correo para área \"" + area + "\" - omitido"));
+                                continue;
+                            }
+
+                            ConfiguracionCorreo cfg = cfgOpt.get();
+
+                            List<ProyectoAutomatizacion> exitosos = proyArea.stream()
+                                .filter(p -> p.getEstado() == ProyectoAutomatizacion.EstadoEjecucion.EXITOSO)
+                                .collect(Collectors.toList());
+                            List<ProyectoAutomatizacion> fallidos = proyArea.stream()
+                                .filter(p -> p.getEstado() != ProyectoAutomatizacion.EstadoEjecucion.EXITOSO)
+                                .collect(Collectors.toList());
+
+                            Platform.runLater(() -> agregarLog(
+                                "📧 Enviando correo área \"" + area + "\" | Exitosos: " + exitosos.size()
+                                + " | Con error: " + fallidos.size()));
+
+                            EnviadorCorreoOutlook.ResultadoEnvio resultado =
+                                EnviadorCorreoOutlook.enviar(cfg, exitosos, fallidos, fechaDesde);
+
+                            Platform.runLater(() -> {
+                                agregarLog(resultado.getMensaje());
+                                if (!resultado.isExito() && !resultado.getDetalle().isBlank()) {
+                                    agregarLog("   Detalle: "
+                                        + resultado.getDetalle().lines().findFirst().orElse(""));
+                                }
+                            });
+                        }
+                    }
                 }, "ProgramadorTarea-PostExec-").start();
             }
         });
@@ -177,9 +248,11 @@ public class ControladorPrincipal {
         root = new BorderPane();
         root.setPadding(new Insets(15));
         
-        // Header
+        // Barra de menú estilo Windows + Header
+        MenuBar menuBar = crearMenuBar();
         VBox header = crearHeader();
-        root.setTop(header);
+        VBox topContainer = new VBox(menuBar, header);
+        root.setTop(topContainer);
         
         // Centro: Tabla + Log
         SplitPane splitPane = new SplitPane();
@@ -218,6 +291,19 @@ public class ControladorPrincipal {
         btnEliminar = new Button(" Eliminar Seleccionados");
         btnEliminar.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold;");
         btnEliminar.setOnAction(e -> eliminarSeleccionados());
+
+        cboFiltroEmpresa = new ComboBox<>();
+        cboFiltroEmpresa.setPromptText("Filtrar por Empresa");
+        cboFiltroEmpresa.setEditable(false);
+        cboFiltroEmpresa.setOnAction(e -> aplicarFiltro());
+
+        Button btnAgregarEmpresa = new Button("+ Empresa");
+        btnAgregarEmpresa.setOnAction(e -> agregarEmpresa());
+
+        Button btnQuitarEmpresa = new Button("- Empresa");
+        btnQuitarEmpresa.setOnAction(e -> quitarEmpresaSeleccionada());
+
+        refrescarEmpresasDisponibles(null);
         
         cboFiltroArea = new ComboBox<>();
         cboFiltroArea.setPromptText("Filtrar por Area");
@@ -233,26 +319,109 @@ public class ControladorPrincipal {
         cboFiltroVPN.setValue("Todas");
         cboFiltroVPN.setOnAction(e -> aplicarFiltro());
         
-        Button btnRefrescar = new Button(" Refrescar");
+        Button btnRefrescar = new Button("↻ Refrescar");
         btnRefrescar.setOnAction(e -> refrescarTabla());
         
-        Button btnActualizarChromeDriver = new Button("🔄 Actualizar ChromeDriver");
-        btnActualizarChromeDriver.setStyle("-fx-background-color: #00BCD4; -fx-text-fill: white; -fx-font-weight: bold;");
-        btnActualizarChromeDriver.setOnAction(e -> actualizarChromeDriver());
+        Button btnCargarChromeDriver = new Button("📁 Actualizar ChromeDriver");
+        btnCargarChromeDriver.setStyle("-fx-background-color: #009688; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnCargarChromeDriver.setOnAction(e -> cargarChromeDriverManual());
+        
+        // Configurar drag and drop para ChromeDriver
+        btnCargarChromeDriver.setOnDragOver(event -> {
+            if (event.getGestureSource() != btnCargarChromeDriver && event.getDragboard().hasFiles()) {
+                java.util.List<File> files = event.getDragboard().getFiles();
+                if (files.size() == 1 && files.get(0).getName().equalsIgnoreCase("chromedriver.exe")) {
+                    event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+                    btnCargarChromeDriver.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+                }
+            }
+            event.consume();
+        });
+        
+        btnCargarChromeDriver.setOnDragExited(event -> {
+            btnCargarChromeDriver.setStyle("-fx-background-color: #009688; -fx-text-fill: white; -fx-font-weight: bold;");
+            event.consume();
+        });
+        
+        btnCargarChromeDriver.setOnDragDropped(event -> {
+            javafx.scene.input.Dragboard db = event.getDragboard();
+            boolean success = false;
+            if (db.hasFiles() && db.getFiles().size() == 1) {
+                File archivoArrastrado = db.getFiles().get(0);
+                if (archivoArrastrado.getName().equalsIgnoreCase("chromedriver.exe")) {
+                    procesarActualizacionChromeDriver(archivoArrastrado);
+                    success = true;
+                }
+            }
+            event.setDropCompleted(success);
+            event.consume();
+            btnCargarChromeDriver.setStyle("-fx-background-color: #009688; -fx-text-fill: white; -fx-font-weight: bold;");
+        });
         
         btnVistaCompacta = new Button("📦 Vista Compacta");
         btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
         btnVistaCompacta.setOnAction(e -> alternarVistaCompacta());
+
+        btnLicencia = new Button("🔐 Licencia");
+        // Si es equipo maestro, mostrar panel de gestión completo; si no, diálogo de cliente
+        if (LicenciaDialog.esMaestro()) {
+            btnLicencia.setText("🛡 Gestión de Licencias");
+            btnLicencia.setStyle("-fx-background-color: #1565C0; -fx-text-fill: white; -fx-font-weight: bold;");
+        } else {
+            btnLicencia.setStyle("-fx-background-color: #607D8B; -fx-text-fill: white;");
+        }
+        btnLicencia.setOnAction(e -> {
+            try {
+                if (LicenciaDialog.esMaestro()) {
+                    // Abrir panel completo de gestión de licencias (App Maestra embebida)
+                    javafx.stage.Stage stage = new javafx.stage.Stage();
+                    stage.initModality(javafx.stage.Modality.APPLICATION_MODAL);
+                    stage.setTitle("Gestión de Licencias — App Maestra");
+                    stage.setWidth(1000);
+                    stage.setHeight(660);
+                    stage.setMinWidth(800);
+                    stage.setMinHeight(520);
+                    com.orquestador.maestro.LicenciaManagerController mgr =
+                        new com.orquestador.maestro.LicenciaManagerController();
+                    stage.setScene(new javafx.scene.Scene(
+                        (javafx.scene.Parent) mgr.buildRoot()));
+                    stage.showAndWait();
+                } else {
+                    new LicenciaDialog().showAndWait();
+                }
+            } catch (Exception ex) {
+                System.err.println("Error abriendo gestión de licencia: " + ex.getMessage());
+            }
+        });
+        
+        // Checkbox para habilitar/deshabilitar RETRY
+        CheckBox chkRetry = new CheckBox("Retry (3 intentos)");
+        chkRetry.setStyle("-fx-font-size: 12px; -fx-padding: 5px;");
+        // Inicializar siempre a FALSE - el usuario decide si habilitar
+        chkRetry.setSelected(false);
+        retryGlobalHabilitado = false;
+        chkRetry.setTooltip(new Tooltip("Habilitar reintentos: si un proyecto falla, se reintentará hasta 3 veces. Por defecto deshabilitado."));
+        chkRetry.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            // Aplicar el estado de retry a todos los proyectos seleccionados
+            retryGlobalHabilitado = newVal;
+            for (ProyectoAutomatizacion proyecto : proyectos) {
+                proyecto.setRetryHabilitado(newVal);
+                proyecto.setIntentoActual(0); // Resetear intento
+            }
+            guardarProyectos();
+        });
         
         // Registrar descripciones y comportamiento de hover prolongado (3s)
         descripcionBotones.put(btnAgregar, "Agregar un nuevo proyecto al listado. Abre un diálogo para ingresar nombre, ruta y configuración de generación de informes.");
         descripcionBotones.put(btnEliminar, "Eliminar los proyectos actualmente seleccionados (checkbox marcados). Esta acción se puede deshacer en la configuración solo manualmente.");
         descripcionBotones.put(btnVistaCompacta, "Alterna la vista compacta: muestra solo los proyectos seleccionados. Útil para concentrarse en un subconjunto de proyectos.");
+        descripcionBotones.put(btnLicencia, "Administrar licencia: activar, comprobar estado o revocar la instalación.");
         descripcionBotones.put(btnEjecutarSeleccionados, "Inicia la ejecución secuencial de los proyectos seleccionados en la vista actual. Agrupa por tipo de VPN y muestra popups de conexión cuando corresponde.");
         descripcionBotones.put(btnCancelarEjecucion, "Cancela la ejecución en curso (intenta detener el proceso actual). No deshace las marcas de ejecución previas.");
         descripcionBotones.put(btnGenerarInformes, "Genera informes (Word/PDF) a partir de las capturas y resultados de los proyectos seleccionados.");
+        descripcionBotones.put(btnInformeExcel, "Genera un informe de ejecución en Excel con todos los proyectos, incluyendo: Nombre, Área, Retry, Estado, Última Ejecución y Duración.");
         descripcionBotones.put(btnAutomatizar, "Configura una automatización programada: selecciona proyectos y un intervalo en minutos para ejecutar automáticamente.");
-        descripcionBotones.put(btnActualizarChromeDriver, "Buscar y reemplazar ChromeDriver.exe en todos los proyectos registrados con el archivo seleccionado.");
+        descripcionBotones.put(btnCargarChromeDriver, "Actualizar ChromeDriver: Selecciona un chromedriver.exe y se copiará PERMANENTEMENTE a todos los proyectos que tengan este archivo. También puedes arrastrar y soltar el archivo sobre este botón.");
 
         // Adjuntar comportamiento hover a cada botón con descripción
         attachHoverInfo(btnAgregar, descripcionBotones.get(btnAgregar));
@@ -261,11 +430,19 @@ public class ControladorPrincipal {
         attachHoverInfo(btnEjecutarSeleccionados, descripcionBotones.get(btnEjecutarSeleccionados));
         attachHoverInfo(btnCancelarEjecucion, descripcionBotones.get(btnCancelarEjecucion));
         attachHoverInfo(btnGenerarInformes, descripcionBotones.get(btnGenerarInformes));
+        attachHoverInfo(btnInformeExcel, descripcionBotones.get(btnInformeExcel));
         attachHoverInfo(btnAutomatizar, descripcionBotones.get(btnAutomatizar));
-        attachHoverInfo(btnActualizarChromeDriver, descripcionBotones.get(btnActualizarChromeDriver));
+        attachHoverInfo(btnCargarChromeDriver, descripcionBotones.get(btnCargarChromeDriver));
         
+        // Botón de configuración de correo (email por área)
+        btnConfigCorreo = new Button("📧 Config. Correo");
+        btnConfigCorreo.setStyle("-fx-background-color: #0D47A1; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnConfigCorreo.setTooltip(new Tooltip("Configura los destinatarios, plantilla y ruta de PDFs para envío de correo por área"));
+        btnConfigCorreo.setOnAction(e -> mostrarDialogoConfiguracionCorreo());
+
         botonesAccion.getChildren().addAll(btnAgregar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL),
-                           new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnActualizarChromeDriver, btnVistaCompacta);
+               new Label("Empresa:"), cboFiltroEmpresa, btnAgregarEmpresa, btnQuitarEmpresa,
+               new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnVistaCompacta, new Separator(javafx.geometry.Orientation.VERTICAL), chkRetry);
         
         // Botones de ejecucin
         HBox botonesEjecucion = new HBox(10);
@@ -287,13 +464,349 @@ public class ControladorPrincipal {
         btnAutomatizar = new Button(" Automatizar");
         btnAutomatizar.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
         btnAutomatizar.setOnAction(e -> automatizarEjecucion());
+        
+        btnInformeExcel = new Button("📊 Informe Excel");
+        btnInformeExcel.setStyle("-fx-background-color: #1B5E20; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
+        btnInformeExcel.setOnAction(e -> generarInformeExcel());
 
-        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnCancelarEjecucion, btnGenerarInformes, btnAutomatizar);
+        botonesEjecucion.getChildren().addAll(btnEjecutarSeleccionados, btnCancelarEjecucion, btnGenerarInformes);
         
         header.getChildren().addAll(titulo, botonesAccion, botonesEjecucion);
         return header;
     }
-    
+
+    // -----------------------------------------------------------------------
+    // BARRA DE MENÚ ESTILO WINDOWS
+    // -----------------------------------------------------------------------
+
+    private MenuBar crearMenuBar() {
+        MenuBar menuBar = new MenuBar();
+        // Estilo discreto igual a la barra de título de Windows Explorer
+        menuBar.setStyle("-fx-font-size: 12px; -fx-padding: 2 0 2 0; -fx-background-color: #F0F0F0; -fx-border-color: #CCCCCC; -fx-border-width: 0 0 1 0;");
+
+        // ── Menú Archivo ─────────────────────────────────────────────────
+        Menu menuArchivo = new Menu("Archivo");
+
+        MenuItem itemExportar = new MenuItem("⬆  Exportar configuración...");
+        itemExportar.setOnAction(e -> exportarConfiguracion());
+
+        MenuItem itemImportar = new MenuItem("⬇  Importar configuración...");
+        itemImportar.setOnAction(e -> importarConfiguracion());
+
+        SeparatorMenuItem sep1 = new SeparatorMenuItem();
+
+        MenuItem itemSalir = new MenuItem("Salir");
+        itemSalir.setOnAction(e -> Platform.exit());
+
+        menuArchivo.getItems().addAll(itemExportar, itemImportar, sep1, itemSalir);
+
+        // ── Menú Herramientas ─────────────────────────────────────────────
+        Menu menuHerramientas = new Menu("Herramientas");
+
+        MenuItem itemAutomatizar = new MenuItem("⏰  Automatizar...");
+        itemAutomatizar.setOnAction(e -> automatizarEjecucion());
+
+        MenuItem itemInformeExcel = new MenuItem("📊  Informe Excel");
+        itemInformeExcel.setOnAction(e -> generarInformeExcel());
+
+        SeparatorMenuItem sep2 = new SeparatorMenuItem();
+
+        MenuItem itemConfigCorreo = new MenuItem("📧  Configuración de Correo...");
+        itemConfigCorreo.setOnAction(e -> mostrarDialogoConfiguracionCorreo());
+
+        MenuItem itemLicencia = new MenuItem(
+            LicenciaDialog.esMaestro() ? "🛡  Gestión de Licencias..." : "🔐  Licencia...");
+        itemLicencia.setOnAction(e -> {
+            try {
+                if (LicenciaDialog.esMaestro()) {
+                    javafx.stage.Stage stage = new javafx.stage.Stage();
+                    stage.initModality(javafx.stage.Modality.APPLICATION_MODAL);
+                    stage.setTitle("Gestión de Licencias \u2014 App Maestra");
+                    stage.setWidth(1000);
+                    stage.setHeight(660);
+                    stage.setMinWidth(800);
+                    stage.setMinHeight(520);
+                    com.orquestador.maestro.LicenciaManagerController mgr =
+                        new com.orquestador.maestro.LicenciaManagerController();
+                    stage.setScene(new javafx.scene.Scene(
+                        (javafx.scene.Parent) mgr.buildRoot()));
+                    stage.showAndWait();
+                } else {
+                    new LicenciaDialog().showAndWait();
+                }
+            } catch (Exception ex) {
+                System.err.println("Error abriendo licencia: " + ex.getMessage());
+            }
+        });
+
+        SeparatorMenuItem sep3 = new SeparatorMenuItem();
+
+        MenuItem itemChromeDriver = new MenuItem("📁  Actualizar ChromeDriver...");
+        itemChromeDriver.setOnAction(e -> cargarChromeDriverManual());
+
+        menuHerramientas.getItems().addAll(
+            itemAutomatizar, itemInformeExcel, sep2,
+            itemConfigCorreo, itemLicencia, sep3,
+            itemChromeDriver);
+
+        menuBar.getMenus().addAll(menuArchivo, menuHerramientas);
+        return menuBar;
+    }
+
+    // -----------------------------------------------------------------------
+    // EXPORTAR / IMPORTAR  CONFIGURACIÓN
+    // -----------------------------------------------------------------------
+
+    /**
+     * Guía al usuario paso a paso para exportar toda la configuración de proyectos
+     * a un archivo JSON con rutas relativizadas.
+     */
+    private void exportarConfiguracion() {
+        javafx.stage.Stage ventana = (javafx.stage.Stage) root.getScene().getWindow();
+
+        if (proyectos.isEmpty()) {
+            new Alert(Alert.AlertType.WARNING, "No hay proyectos cargados para exportar.",
+                ButtonType.OK).showAndWait();
+            return;
+        }
+
+        // ── Detectar raíces automáticamente desde los datos en memoria ──
+        java.util.List<String> rutasProyecto = new java.util.ArrayList<>();
+        java.util.List<String> rutasInformes = new java.util.ArrayList<>();
+        java.util.List<String> rutasTemplates = new java.util.ArrayList<>();
+
+        for (ProyectoAutomatizacion p : proyectos) {
+            if (p.getRuta() != null && !p.getRuta().isBlank())
+                rutasProyecto.add(p.getRuta());
+            if (p.getRutaImagenes() != null && !p.getRutaImagenes().isBlank())
+                rutasProyecto.add(p.getRutaImagenes());
+            if (p.getImagenesSeleccionadas() != null)
+                rutasProyecto.addAll(p.getImagenesSeleccionadas().stream()
+                    .filter(s -> s != null && !s.isBlank()).collect(Collectors.toList()));
+            if (p.getRutaSalidaWord() != null && !p.getRutaSalidaWord().isBlank())
+                rutasInformes.add(p.getRutaSalidaWord());
+            if (p.getRutaSalidaPdf() != null && !p.getRutaSalidaPdf().isBlank())
+                rutasInformes.add(p.getRutaSalidaPdf());
+            if (p.getRutaTemplateWord() != null && !p.getRutaTemplateWord().isBlank())
+                rutasTemplates.add(p.getRutaTemplateWord());
+            if (p.getInformes() != null) {
+                for (com.orquestador.modelo.ConfiguracionInforme ci : p.getInformes()) {
+                    if (ci.getTemplateWord() != null && !ci.getTemplateWord().isBlank())
+                        rutasTemplates.add(ci.getTemplateWord());
+                    if (ci.getPatronImagenes() != null && !ci.getPatronImagenes().isBlank())
+                        rutasProyecto.add(ci.getPatronImagenes());
+                    if (ci.getImagenesSeleccionadas() != null)
+                        rutasProyecto.addAll(ci.getImagenesSeleccionadas().stream()
+                            .filter(s -> s != null && !s.isBlank()).collect(Collectors.toList()));
+                }
+            }
+        }
+
+        String raizProyectos = GestorExportImport.detectarRaizComun(rutasProyecto);
+        String raizInformes  = GestorExportImport.detectarRaizComun(rutasInformes);
+        String raizTemplates = GestorExportImport.detectarRaizComun(rutasTemplates);
+
+        // ── Mostrar resumen de lo que se detectó y pedir confirmación ────────────
+        Alert resumen = new Alert(Alert.AlertType.CONFIRMATION);
+        resumen.initOwner(ventana);
+        resumen.setTitle("Exportar configuración");
+        resumen.setHeaderText("Se exportarán " + proyectos.size() + " proyecto(s)");
+        resumen.setContentText(
+            "Raíz proyectos detectada:\n  " + (raizProyectos.isBlank() ? "(no detectada)" : raizProyectos) +
+            "\n\nRaíz informes detectada:\n  " + (raizInformes.isBlank() ? "(no detectada)" : raizInformes) +
+            "\n\nRaíz templates detectada:\n  " + (raizTemplates.isBlank() ? "(no detectada)" : raizTemplates) +
+            "\n\n¿Deseas continuar con la exportación?");
+        java.util.Optional<ButtonType> conf = resumen.showAndWait();
+        if (conf.isEmpty() || conf.get() != ButtonType.OK) return;
+
+        // ── Solo pedir dónde guardar el archivo ───────────────────────────────
+        javafx.stage.FileChooser fcDestino = new javafx.stage.FileChooser();
+        fcDestino.setTitle("Guardar archivo de configuración");
+        fcDestino.setInitialFileName("configuracion_proyectos.json");
+        fcDestino.getExtensionFilters().add(
+            new javafx.stage.FileChooser.ExtensionFilter("Configuración JSON", "*.json"));
+        File destino = fcDestino.showSaveDialog(ventana);
+        if (destino == null) return;
+
+        // ── Ejecutar exportación ─────────────────────────────────────────────
+        try {
+            GestorExportImport.exportar(
+                new java.util.ArrayList<>(proyectos),
+                destino,
+                raizProyectos,
+                raizInformes,
+                raizTemplates
+            );
+            agregarLog("✅ Configuración exportada: " + destino.getAbsolutePath());
+            Alert ok = new Alert(Alert.AlertType.INFORMATION);
+            ok.initOwner(ventana);
+            ok.setTitle("Exportación exitosa");
+            ok.setHeaderText("Configuración exportada correctamente");
+            ok.setContentText(
+                "Archivo generado:\n" + destino.getAbsolutePath() +
+                "\nProyectos exportados: " + proyectos.size());
+            ok.showAndWait();
+        } catch (Exception ex) {
+            agregarLog("❌ Error al exportar: " + ex.getMessage());
+            Alert err = new Alert(Alert.AlertType.ERROR);
+            err.initOwner(ventana);
+            err.setTitle("Error de exportación");
+            err.setHeaderText("No se pudo exportar la configuración");
+            err.setContentText(ex.getMessage());
+            err.showAndWait();
+        }
+    }
+
+    /**
+     * Guía al usuario paso a paso para importar una configuración desde un archivo JSON,
+     * reconstruyendo todas las rutas absolutas con las nuevas raíces del equipo destino.
+     */
+    private void importarConfiguracion() {
+        javafx.stage.Stage ventana = (javafx.stage.Stage) root.getScene().getWindow();
+
+        // ── Paso 1: Seleccionar el archivo .json a importar ──────────────────
+        javafx.stage.FileChooser fcImport = new javafx.stage.FileChooser();
+        fcImport.setTitle("Selecciona el archivo de configuración — Paso 1/4");
+        fcImport.getExtensionFilters().add(
+            new javafx.stage.FileChooser.ExtensionFilter("Configuración JSON", "*.json"));
+        File archivoImport = fcImport.showOpenDialog(ventana);
+        if (archivoImport == null) return;
+
+        // Mostrar metadatos del archivo antes de continuar
+        try {
+            GestorExportImport.PaqueteExportacion meta =
+                GestorExportImport.leerMetadatos(archivoImport);
+            int totalProy = meta.proyectos != null ? meta.proyectos.size() : 0;
+            Alert infoMeta = new Alert(Alert.AlertType.CONFIRMATION);
+            infoMeta.initOwner(ventana);
+            infoMeta.setTitle("Información del archivo");
+            infoMeta.setHeaderText("Archivo de configuración válido. ¿Deseas continuar?");
+            infoMeta.setContentText(
+                "Fecha de exportación: " + (meta.fecha != null ? meta.fecha : "desconocida") +
+                "\nProyectos incluidos: " + totalProy +
+                "\nRaíz proyectos original: " + (meta.infoRaizProyectos != null ? meta.infoRaizProyectos : "—") +
+                "\nRaíz informes original: " + (meta.infoRaizInformes != null ? meta.infoRaizInformes : "—") +
+                "\nRaíz templates original: " + (meta.infoRaizTemplates != null ? meta.infoRaizTemplates : "—") +
+                "\n\nA continuación se te pedirán las rutas en ESTE equipo.");
+            java.util.Optional<ButtonType> resp = infoMeta.showAndWait();
+            if (resp.isEmpty() || resp.get() != ButtonType.OK) return;
+        } catch (Exception ex) {
+            Alert err = new Alert(Alert.AlertType.ERROR);
+            err.initOwner(ventana);
+            err.setTitle("Archivo inválido");
+            err.setContentText("No se pudo leer el archivo: " + ex.getMessage());
+            err.showAndWait();
+            return;
+        }
+
+        // ── Paso 2: Raíz de proyectos en ESTE equipo ─────────────────────────
+        Alert info2 = new Alert(Alert.AlertType.INFORMATION);
+        info2.initOwner(ventana);
+        info2.setTitle("Importar configuración — Paso 2/4");
+        info2.setHeaderText("Selecciona la carpeta RAÍZ de proyectos en este equipo");
+        info2.setContentText(
+            "Selecciona la carpeta que contiene las 4 áreas (Clientes, Comercial, Integraciones, Siniestros).\n\n" +
+            "Ejemplo: C:\\Proyectos Respaldo");
+        info2.showAndWait();
+
+        javafx.stage.DirectoryChooser dcProyectos = new javafx.stage.DirectoryChooser();
+        dcProyectos.setTitle("Raíz de proyectos — Paso 2/4");
+        File raizProyectos = dcProyectos.showDialog(ventana);
+        if (raizProyectos == null) return;
+
+        // ── Paso 3: Raíz de informes en ESTE equipo ──────────────────────────
+        Alert info3 = new Alert(Alert.AlertType.INFORMATION);
+        info3.initOwner(ventana);
+        info3.setTitle("Importar configuración — Paso 3/4");
+        info3.setHeaderText("Selecciona la carpeta RAÍZ de informes en este equipo");
+        info3.setContentText(
+            "Selecciona la carpeta donde se almacenarán los informes PDF y WORD.\n" +
+            "Se crearán automáticamente las subcarpetas necesarias.");
+        info3.showAndWait();
+
+        javafx.stage.DirectoryChooser dcInformes = new javafx.stage.DirectoryChooser();
+        dcInformes.setTitle("Raíz de informes — Paso 3/4");
+        File raizInformes = dcInformes.showDialog(ventana);
+        if (raizInformes == null) return;
+
+        // ── Paso 4: Raíz de templates Word en ESTE equipo ────────────────────
+        Alert info4 = new Alert(Alert.AlertType.INFORMATION);
+        info4.initOwner(ventana);
+        info4.setTitle("Importar configuración — Paso 4/4");
+        info4.setHeaderText("Selecciona la carpeta RAÍZ de templates Word en este equipo");
+        info4.setContentText("Selecciona la carpeta donde están los templates (.docx) base para los informes.");
+        info4.showAndWait();
+
+        javafx.stage.DirectoryChooser dcTemplates = new javafx.stage.DirectoryChooser();
+        dcTemplates.setTitle("Raíz de templates — Paso 4/4");
+        File raizTemplates = dcTemplates.showDialog(ventana);
+        if (raizTemplates == null) return;
+
+        // ── Preguntar si reemplazar o fusionar ───────────────────────────────
+        Alert pregunta = new Alert(Alert.AlertType.CONFIRMATION);
+        pregunta.initOwner(ventana);
+        pregunta.setTitle("Modo de importación");
+        pregunta.setHeaderText("¿Cómo deseas importar los proyectos?");
+        pregunta.setContentText(
+            "REEMPLAZAR: elimina la configuración actual e importa solo los proyectos del archivo.\n\n" +
+            "AGREGAR: mantiene los proyectos actuales y agrega los nuevos del archivo (evita duplicados por nombre).");
+        ButtonType btnReemplazar = new ButtonType("Reemplazar todo");
+        ButtonType btnAgregar2   = new ButtonType("Agregar");
+        ButtonType btnCancelar2  = new ButtonType("Cancelar", ButtonBar.ButtonData.CANCEL_CLOSE);
+        pregunta.getButtonTypes().setAll(btnReemplazar, btnAgregar2, btnCancelar2);
+        java.util.Optional<ButtonType> modoResp = pregunta.showAndWait();
+        if (modoResp.isEmpty() || modoResp.get() == btnCancelar2) return;
+        boolean reemplazar = modoResp.get() == btnReemplazar;
+
+        // ── Ejecutar importación ─────────────────────────────────────────────
+        try {
+            java.util.List<ProyectoAutomatizacion> importados = GestorExportImport.importar(
+                archivoImport,
+                raizProyectos.getAbsolutePath(),
+                raizInformes.getAbsolutePath(),
+                raizTemplates.getAbsolutePath()
+            );
+
+            if (reemplazar) {
+                proyectos.setAll(importados);
+            } else {
+                // Agregar solo los que no existan por nombre
+                java.util.Set<String> nombresActuales = new java.util.HashSet<>();
+                for (ProyectoAutomatizacion p : proyectos) nombresActuales.add(p.getNombre());
+                for (ProyectoAutomatizacion p : importados) {
+                    if (!nombresActuales.contains(p.getNombre())) proyectos.add(p);
+                }
+            }
+
+            normalizarEmpresasEnProyectos();
+            empresasRegistradas.addAll(obtenerEmpresasDesdeProyectos());
+            refrescarEmpresasDisponibles(cboFiltroEmpresa != null ? cboFiltroEmpresa.getValue() : null);
+
+            guardarProyectos();
+            guardarPreferencias();
+            tablaProyectos.refresh();
+            actualizarEstadisticas();
+
+            agregarLog("✅ Configuración importada: " + importados.size() + " proyecto(s) desde " + archivoImport.getName());
+            Alert ok = new Alert(Alert.AlertType.INFORMATION);
+            ok.initOwner(ventana);
+            ok.setTitle("Importación exitosa");
+            ok.setHeaderText("Configuración importada correctamente");
+            ok.setContentText(
+                "Proyectos importados: " + importados.size() +
+                "\nEstructura de carpetas de informes creada en:\n" + raizInformes.getAbsolutePath());
+            ok.showAndWait();
+        } catch (Exception ex) {
+            agregarLog("❌ Error al importar: " + ex.getMessage());
+            Alert err = new Alert(Alert.AlertType.ERROR);
+            err.initOwner(ventana);
+            err.setTitle("Error de importación");
+            err.setHeaderText("No se pudo importar la configuración");
+            err.setContentText(ex.getMessage());
+            err.showAndWait();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private VBox crearSeccionTabla() {
         VBox container = new VBox(5);
@@ -309,12 +822,12 @@ public class ControladorPrincipal {
         // Columna Seleccionar
         TableColumn<ProyectoAutomatizacion, Boolean> colSeleccionar = new TableColumn<>("");
         
-        // Checkbox en header para seleccionar/deseleccionar todos los proyectos
+        // Checkbox en header para seleccionar/deseleccionar todos los proyectos visibles (filtrados)
         CheckBox headerCheckBox = new CheckBox();
         headerCheckBox.setOnAction(e -> {
             boolean selected = headerCheckBox.isSelected();
-            // Aplicar a todos los proyectos (deseleccionar/seleccionar global)
-            for (ProyectoAutomatizacion p : proyectos) {
+            // Aplicar SOLO a los proyectos filtrados/visibles en la tabla
+            for (ProyectoAutomatizacion p : proyectosOrdenados) {
                 p.setSeleccionado(selected);
             }
             tablaProyectos.refresh();
@@ -328,6 +841,7 @@ public class ControladorPrincipal {
             prop.addListener((obs, oldVal, newVal) -> {
                 proyecto.setSeleccionado(newVal);
                 guardarProyectos();
+                guardarPreferencias(); // Guardar también el estado de selección en preferencias
             });
             return prop;
         });
@@ -365,6 +879,20 @@ public class ControladorPrincipal {
             guardarProyectos();
         });
         colNombre.setMinWidth(200);
+
+        // Columna Empresa
+        TableColumn<ProyectoAutomatizacion, String> colEmpresa = new TableColumn<>("Empresa");
+        colEmpresa.setCellValueFactory(cellData -> new javafx.beans.property.SimpleStringProperty(cellData.getValue().getEmpresa()));
+        colEmpresa.setCellFactory(TextFieldTableCell.forTableColumn());
+        colEmpresa.setOnEditCommit(e -> {
+            e.getRowValue().setEmpresa(e.getNewValue());
+            empresasRegistradas.add(e.getRowValue().getEmpresa());
+            refrescarEmpresasDisponibles(cboFiltroEmpresa != null ? cboFiltroEmpresa.getValue() : null);
+            guardarProyectos();
+            guardarPreferencias();
+            aplicarFiltro();
+        });
+        colEmpresa.setMinWidth(150);
         
         // Columna Ruta (Editable)
         TableColumn<ProyectoAutomatizacion, String> colRuta = new TableColumn<>("Ruta");
@@ -396,15 +924,50 @@ public class ControladorPrincipal {
         });
         colVPN.setMinWidth(100);
         
-        // Columna Tipo Ejecucin
-        TableColumn<ProyectoAutomatizacion, TipoEjecucion> colTipo = new TableColumn<>("Tipo");
-        colTipo.setCellValueFactory(cellData -> new javafx.beans.property.SimpleObjectProperty<>(cellData.getValue().getTipoEjecucion()));
-        colTipo.setCellFactory(ComboBoxTableCell.forTableColumn(TipoEjecucion.values()));
-        colTipo.setOnEditCommit(e -> {
-            e.getRowValue().setTipoEjecucion(e.getNewValue());
-            guardarProyectos();
+        // Columna Retry (antes era Tipo Ejecución que ahora está oculto/no visible)
+        TableColumn<ProyectoAutomatizacion, String> colRetry = new TableColumn<>("Retry");
+        colRetry.setCellValueFactory(cellData -> {
+            ProyectoAutomatizacion proyecto = cellData.getValue();
+            // Crear una propiedad observable que se actualiza con los cambios de intento
+            javafx.beans.property.SimpleStringProperty prop = new javafx.beans.property.SimpleStringProperty() {
+                @Override
+                public String get() {
+                    return proyecto.getFormatoRetry();
+                }
+            };
+            return prop;
         });
-        colTipo.setMinWidth(120);
+        colRetry.setCellFactory(column -> new javafx.scene.control.TableCell<ProyectoAutomatizacion, String>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || getIndex() < 0 || getIndex() >= getTableView().getItems().size()) {
+                    setText("-");
+                    setStyle("");
+                } else {
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    String texto = proyecto.getFormatoRetry();
+                    
+                    if (texto == null || texto.isEmpty()) {
+                        setText("-");
+                        setStyle("");
+                    } else {
+                        setText(texto);
+                        // Colorear según el estado del reintento
+                        if (proyecto.getEstado() == EstadoEjecucion.FALLIDO) {
+                            setStyle("-fx-text-fill: #FF6B6B; -fx-font-weight: bold;");
+                        } else if (proyecto.getEstado() == EstadoEjecucion.EXITOSO) {
+                            setStyle("-fx-text-fill: #4CAF50; -fx-font-weight: bold;");
+                        } else if (proyecto.getEstado() == EstadoEjecucion.EJECUTANDO) {
+                            setStyle("-fx-text-fill: #FF9800; -fx-font-weight: bold;");
+                        } else {
+                            setStyle("");
+                        }
+                    }
+                }
+            }
+        });
+        colRetry.setMinWidth(80);
         
         // Columna Estado
         TableColumn<ProyectoAutomatizacion, String> colEstado = new TableColumn<>("Estado");
@@ -415,6 +978,29 @@ public class ControladorPrincipal {
                 return new javafx.beans.property.SimpleStringProperty(proyecto.getEstado().getDescripcion());
             } else {
                 return new javafx.beans.property.SimpleStringProperty("");
+            }
+        });
+        colEstado.setCellFactory(column -> new javafx.scene.control.TableCell<ProyectoAutomatizacion, String>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null || item.isEmpty()) {
+                    setText("");
+                    setStyle("");
+                } else {
+                    setText(item);
+                    ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
+                    // Aplicar color rojo si el estado es FALLIDO
+                    if (proyecto != null && proyecto.getEstado() == EstadoEjecucion.FALLIDO) {
+                        setStyle("-fx-text-fill: #FF0000; -fx-font-weight: bold;");
+                    } else if (proyecto != null && proyecto.getEstado() == EstadoEjecucion.EXITOSO) {
+                        setStyle("-fx-text-fill: #00AA00; -fx-font-weight: bold;");
+                    } else if (proyecto != null && proyecto.getEstado() == EstadoEjecucion.EJECUTANDO) {
+                        setStyle("-fx-text-fill: #FF9800; -fx-font-weight: bold;");
+                    } else {
+                        setStyle("");
+                    }
+                }
             }
         });
         colEstado.setMinWidth(120);
@@ -509,6 +1095,18 @@ public class ControladorPrincipal {
 
                     if (esManual) {
                         setGraphic(btnCargarImagenes);
+                    } else if (esProyectoWebLiquidacion(proyecto)) {
+                        // Proyecto 20: Web de Liquidación con CSV especial
+                        btnConfigurar.setText("📋 Configurar CSV");
+                        btnConfigurar.setTooltip(new Tooltip("Editar datos del CSV (RUT, Contraseña, Siniestros)"));
+                        btnConfigurar.setStyle("-fx-background-color: #FF6B6B; -fx-text-fill: white; -fx-font-weight: bold;");
+                        setGraphic(btnConfigurar);
+                    } else if (esProyectoMesaRepuestos(proyecto)) {
+                        // Proyecto 21: Mesa de Repuestos con búsqueda flexible de CSV
+                        btnConfigurar.setText("📋 Configurar CSV");
+                        btnConfigurar.setTooltip(new Tooltip("Editar datos del CSV (RUT, Contraseña)"));
+                        btnConfigurar.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold;");
+                        setGraphic(btnConfigurar);
                     } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
                         // Ajustar texto/icono del botón Config según el nombre del proyecto
                         String nombreProyecto = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
@@ -529,7 +1127,7 @@ public class ControladorPrincipal {
         });
         colConfigurar.setMinWidth(150);
         
-        tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colRuta, colArea, colVPN, colTipo, colEstado, colUltima, colDuracion, colReporte, colVerLog, colConfigurar);
+        tablaProyectos.getColumns().addAll(colSeleccionar, colNombre, colEmpresa, colRuta, colArea, colVPN, colRetry, colEstado, colUltima, colDuracion, colReporte, colVerLog, colConfigurar);
 
         // Agregar menú contextual (click derecho) para editar, ver capturas y explorar directorio
         ContextMenu contextMenu = new ContextMenu();
@@ -646,6 +1244,14 @@ public class ControladorPrincipal {
         ComboBox<String> cboArea = new ComboBox<>();
         cboArea.getItems().addAll("Clientes", "Comercial", "Integraciones", "Siniestros");
         cboArea.setValue("Clientes");
+
+        ComboBox<String> cboEmpresa = new ComboBox<>();
+        cboEmpresa.setEditable(true);
+        cboEmpresa.getItems().addAll(empresasRegistradas);
+        String empresaActual = (cboFiltroEmpresa != null && cboFiltroEmpresa.getValue() != null && !"Todas".equals(cboFiltroEmpresa.getValue()))
+            ? cboFiltroEmpresa.getValue()
+            : EMPRESA_DEFAULT;
+        cboEmpresa.setValue(empresaActual);
         
         ComboBox<TipoVPN> cboVPN = new ComboBox<>();
         cboVPN.getItems().addAll(TipoVPN.values());
@@ -821,6 +1427,9 @@ public class ControladorPrincipal {
         
         contenido.getChildren().add(new Label("Área:"));
         contenido.getChildren().add(cboArea);
+
+        contenido.getChildren().add(new Label("Empresa:"));
+        contenido.getChildren().add(cboEmpresa);
         
         contenido.getChildren().add(new Label("VPN:"));
         contenido.getChildren().add(cboVPN);
@@ -978,6 +1587,7 @@ public class ControladorPrincipal {
 
                 ProyectoAutomatizacion proyecto = new ProyectoAutomatizacion(
                     txtNombre.getText(),
+                    cboEmpresa.getValue(),
                     txtRuta.getText(),
                     cboArea.getValue(),
                     cboVPN.getValue(),
@@ -1031,11 +1641,14 @@ public class ControladorPrincipal {
         Optional<ProyectoAutomatizacion> resultado = dialog.showAndWait();
         resultado.ifPresent(proyecto -> {
             proyectos.add(proyecto);
+            empresasRegistradas.add(proyecto.getEmpresa());
             guardarProyectos();
+            refrescarEmpresasDisponibles(proyecto.getEmpresa());
+            guardarPreferencias();
 
             // Resetear filtros para que el proyecto nuevo aparezca inmediatamente
-            cboFiltroArea.setValue("Todas");
-            cboFiltroVPN.setValue("Todas");
+            if (cboFiltroArea != null) cboFiltroArea.setValue("Todas");
+            if (cboFiltroVPN != null) cboFiltroVPN.setValue("Todas");
             aplicarFiltro();
 
             actualizarEstadisticas();
@@ -1061,7 +1674,9 @@ public class ControladorPrincipal {
         Optional<ButtonType> resultado = confirmacion.showAndWait();
         if (resultado.isPresent() && resultado.get() == ButtonType.OK) {
             proyectos.removeAll(seleccionados);
+            refrescarEmpresasDisponibles(cboFiltroEmpresa != null ? cboFiltroEmpresa.getValue() : null);
             guardarProyectos();
+            guardarPreferencias();
             actualizarEstadisticas();
             agregarLog(" Eliminados " + seleccionados.size() + " proyecto(s)");
         }
@@ -1114,6 +1729,12 @@ public class ControladorPrincipal {
         ComboBox<String> cboArea = new ComboBox<>();
         cboArea.getItems().addAll("Clientes", "Comercial", "Integraciones", "Siniestros");
         cboArea.setValue(seleccionado.getArea());
+
+        ComboBox<String> cboEmpresa = new ComboBox<>();
+        cboEmpresa.setEditable(true);
+        cboEmpresa.getItems().addAll(empresasRegistradas);
+        cboEmpresa.setValue((seleccionado.getEmpresa() == null || seleccionado.getEmpresa().trim().isEmpty())
+            ? EMPRESA_DEFAULT : seleccionado.getEmpresa());
         
         ComboBox<TipoVPN> cboVPN = new ComboBox<>();
         cboVPN.getItems().addAll(TipoVPN.values());
@@ -1325,6 +1946,9 @@ public class ControladorPrincipal {
         
         contenido.getChildren().add(new Label("Área:"));
         contenido.getChildren().add(cboArea);
+
+        contenido.getChildren().add(new Label("Empresa:"));
+        contenido.getChildren().add(cboEmpresa);
         
         contenido.getChildren().add(new Label("VPN:"));
         contenido.getChildren().add(cboVPN);
@@ -1574,6 +2198,7 @@ public class ControladorPrincipal {
                 seleccionado.setNombre(txtNombre.getText());
                 seleccionado.setRuta(txtRuta.getText());
                 seleccionado.setArea(cboArea.getValue());
+                seleccionado.setEmpresa(cboEmpresa.getValue());
                 seleccionado.setTipoVPN(cboVPN.getValue());
                 seleccionado.setTipoEjecucion(cboTipo.getValue());
 
@@ -1640,7 +2265,10 @@ public class ControladorPrincipal {
         
         Optional<ProyectoAutomatizacion> resultado = dialog.showAndWait();
         resultado.ifPresent(proyecto -> {
+            empresasRegistradas.add(proyecto.getEmpresa());
             guardarProyectos();
+            refrescarEmpresasDisponibles(proyecto.getEmpresa());
+            guardarPreferencias();
             tablaProyectos.refresh();
             agregarLog("✏️ Proyecto editado: " + proyecto.getNombre());
         });
@@ -1699,6 +2327,42 @@ public class ControladorPrincipal {
         return false;
     }
 
+    // Determina si el proyecto es "20- Web de Liquidación" (con archivo CSV especial)
+    private boolean esProyectoWebLiquidacion(ProyectoAutomatizacion proyecto) {
+        if (proyecto == null || proyecto.getNombre() == null) return false;
+        String nombre = proyecto.getNombre().trim();
+        if (nombre.isEmpty()) return false;
+
+        // Normalizar (quitar tildes) y comparar en minúsculas
+        String normalized = Normalizer.normalize(nombre, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        // Quitar caracteres especiales y compactar espacios
+        String clave = normalized.toLowerCase().replaceAll("[^\\p{Alnum}\\s]", " ").replaceAll("\\s+", " ").trim();
+
+        // Eliminar prefijo numérico tipo "20 - " si existe
+        clave = clave.replaceFirst("^\\d+\\s*[-:]?\\s*", "");
+
+        String target = "web de liquidacion";
+        return clave.contains(target);
+    }
+
+    // Determina si el proyecto es "21- Mesa de Repuestos" (con búsqueda flexible de CSV)
+    private boolean esProyectoMesaRepuestos(ProyectoAutomatizacion proyecto) {
+        if (proyecto == null || proyecto.getNombre() == null) return false;
+        String nombre = proyecto.getNombre().trim();
+        if (nombre.isEmpty()) return false;
+
+        // Normalizar (quitar tildes) y comparar en minúsculas
+        String normalized = Normalizer.normalize(nombre, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        // Quitar caracteres especiales y compactar espacios
+        String clave = normalized.toLowerCase().replaceAll("[^\\p{Alnum}\\s]", " ").replaceAll("\\s+", " ").trim();
+
+        // Eliminar prefijo numérico tipo "21 - " si existe
+        clave = clave.replaceFirst("^\\d+\\s*[-:]?\\s*", "");
+
+        String target = "mesa de repuestos";
+        return clave.contains(target);
+    }
+
     // Detectar la ruta de imágenes probando rutas candidatas dentro del proyecto
     private String detectarRutaImagenesDesdeRuta(String ruta) {
         if (ruta == null || ruta.isEmpty()) return null;
@@ -1751,8 +2415,336 @@ public class ControladorPrincipal {
         return null;
     }
 
-    // Diálogo modal para configurar credenciales de proyectos especiales
+    // Detecta y abre el diálogo apropiado según el tipo de proyecto
     private void abrirDialogoCredenciales(ProyectoAutomatizacion proyecto) {
+        if (esProyectoWebLiquidacion(proyecto)) {
+            abrirDialogoCSVWebLiquidacion(proyecto);
+        } else if (esProyectoMesaRepuestos(proyecto)) {
+            abrirDialogoCSVMesaRepuestos(proyecto);
+        } else {
+            abrirDialogoCredencialesEspeciales(proyecto);
+        }
+    }
+
+    // Diálogo para editar el CSV del proyecto 20 (Web de Liquidación)
+    private void abrirDialogoCSVWebLiquidacion(ProyectoAutomatizacion proyecto) {
+        try {
+            // Ruta base para buscar el archivo CSV - Búsqueda recursiva
+            String rutaBaseSearch = "C:\\Automatizaciones_V2\\Siniestros\\20- Web de Liquidación\\Archivos\\data";
+            
+            // Buscar el archivo CSVBCISeguros.csv de forma flexible
+            java.io.File archivoCSV = buscarArchivoCSVFlexible(new java.io.File(rutaBaseSearch), "CSVBCISeguros.csv");
+
+            if (archivoCSV == null || !archivoCSV.exists()) {
+                mostrarAlerta("Error", "No se encontró el archivo CSVBCISeguros.csv en:\n" + rutaBaseSearch + 
+                             "\n\nVerifica que el archivo exista en las subcarpetas.", Alert.AlertType.ERROR);
+                return;
+            }
+
+            // Leer datos actuales del CSV
+            java.util.Map<String, String> datosCSV = leerCSVWebLiquidacion(archivoCSV);
+
+            Dialog<java.util.Map<String, String>> dialog = new Dialog<>();
+            dialog.setTitle("Configurar Datos - " + proyecto.getNombre());
+            dialog.setHeaderText("Editar datos del CSV (Fila 2)");
+
+            ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
+            dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+
+            VBox contenido = new VBox(12);
+            contenido.setPadding(new Insets(18));
+            contenido.setMinWidth(500);
+
+            Label lblInfo = new Label("⚠️ Nota: Los datos se encuentran en la fila 2 del archivo CSV");
+            lblInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #FF6B6B; -fx-font-weight: bold;");
+            contenido.getChildren().add(lblInfo);
+
+            Label lblPath = new Label("📁 Archivo: " + archivoCSV.getAbsolutePath());
+            lblPath.setStyle("-fx-font-size: 10px; -fx-text-fill: #666;");
+            contenido.getChildren().add(lblPath);
+
+            // Campo Usuario (RUT)
+            HBox hboxUsuario = crearCampoEditable("Usuario:", datosCSV.getOrDefault("rut", ""));
+            TextField txtUsuario = (TextField) hboxUsuario.getChildren().get(1);
+
+            // Campo Contraseña
+            HBox hboxPass = crearCampoEditable("Contraseña:", datosCSV.getOrDefault("contrasena", ""));
+            TextField txtPass = (TextField) hboxPass.getChildren().get(1);
+
+            // Campo Siniestro BCI
+            HBox hboxSiniestBCI = crearCampoEditable("Siniestro BCI:", datosCSV.getOrDefault("siniestro_bci", ""));
+            TextField txtSiniestBCI = (TextField) hboxSiniestBCI.getChildren().get(1);
+
+            // Campo Siniestro Zenit
+            HBox hboxSiniestZenit = crearCampoEditable("Siniestro Zenit:", datosCSV.getOrDefault("siniestro_zenit", ""));
+            TextField txtSiniestZenit = (TextField) hboxSiniestZenit.getChildren().get(1);
+
+            contenido.getChildren().addAll(
+                new Separator(),
+                hboxUsuario,
+                hboxPass,
+                hboxSiniestBCI,
+                hboxSiniestZenit
+            );
+
+            dialog.getDialogPane().setContent(contenido);
+            dialog.setResultConverter(dialogButton -> {
+                if (dialogButton == btnGuardar) {
+                    java.util.Map<String, String> nuevosDatos = new java.util.LinkedHashMap<>();
+                    nuevosDatos.put("rut", txtUsuario.getText().trim());
+                    nuevosDatos.put("contrasena", txtPass.getText().trim());
+                    nuevosDatos.put("siniestro_bci", txtSiniestBCI.getText().trim());
+                    nuevosDatos.put("siniestro_zenit", txtSiniestZenit.getText().trim());
+                    return nuevosDatos;
+                }
+                return null;
+            });
+
+            Optional<java.util.Map<String, String>> resultado = dialog.showAndWait();
+            resultado.ifPresent(nuevosDatos -> {
+                try {
+                    guardarCSVWebLiquidacion(archivoCSV, nuevosDatos);
+                    agregarLog("✅ Datos del CSV actualizados correctamente en: " + archivoCSV.getAbsolutePath());
+                    mostrarAlerta("Éxito", "Datos guardados correctamente en el CSV", Alert.AlertType.INFORMATION);
+                } catch (Exception e) {
+                    agregarLog("❌ Error guardando CSV: " + e.getMessage());
+                    mostrarAlerta("Error", "Error al guardar los datos: " + e.getMessage(), Alert.AlertType.ERROR);
+                }
+            });
+
+        } catch (Exception e) {
+            agregarLog("❌ Error abriendo diálogo: " + e.getMessage());
+            mostrarAlerta("Error", "Error al abrir el diálogo: " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    // Crea un campo editable con etiqueta
+    private HBox crearCampoEditable(String etiqueta, String valor) {
+        HBox hbox = new HBox(10);
+        hbox.setAlignment(Pos.CENTER_LEFT);
+        Label lbl = new Label(etiqueta);
+        lbl.setStyle("-fx-font-weight: bold; -fx-min-width: 150px;");
+        TextField txt = new TextField(valor);
+        txt.setStyle("-fx-padding: 8px;");
+        HBox.setHgrow(txt, Priority.ALWAYS);
+        hbox.getChildren().addAll(lbl, txt);
+        return hbox;
+    }
+
+    // Lee los datos del CSV de Web de Liquidación
+    private java.util.Map<String, String> leerCSVWebLiquidacion(java.io.File archivoCSV) throws Exception {
+        java.util.Map<String, String> datos = new java.util.LinkedHashMap<>();
+        java.util.List<String> lineas = java.nio.file.Files.readAllLines(archivoCSV.toPath());
+
+        if (lineas.size() < 2) {
+            throw new Exception("El archivo CSV no tiene suficientes filas");
+        }
+
+        // Leer fila 2 (índice 1), columna A
+        String filaData = lineas.get(1);
+        String[] partes = filaData.split(",");
+
+        if (partes.length > 0) {
+            // Asumir formato: rut,contraseña,siniestro_bci,siniestro_zenit
+            datos.put("rut", partes.length > 0 ? partes[0].trim() : "");
+            datos.put("contrasena", partes.length > 1 ? partes[1].trim() : "");
+            datos.put("siniestro_bci", partes.length > 2 ? partes[2].trim() : "");
+            datos.put("siniestro_zenit", partes.length > 3 ? partes[3].trim() : "");
+        }
+
+        return datos;
+    }
+
+    // Guarda los datos en el CSV de Web de Liquidación
+    private void guardarCSVWebLiquidacion(java.io.File archivoCSV, java.util.Map<String, String> datos) throws Exception {
+        java.util.List<String> lineas = java.nio.file.Files.readAllLines(archivoCSV.toPath());
+
+        // Construir nueva fila 2 - 4 campos, pero preservar el resto si existen
+        String[] filaParts = lineas.get(1).split(",");
+        StringBuilder nuevaFila = new StringBuilder();
+        nuevaFila.append(datos.get("rut")).append(",")
+                 .append(datos.get("contrasena")).append(",")
+                 .append(datos.get("siniestro_bci")).append(",")
+                 .append(datos.get("siniestro_zenit"));
+        
+        // Si había más columnas, preservarlas
+        if (filaParts.length > 4) {
+            for (int i = 4; i < filaParts.length; i++) {
+                nuevaFila.append(",").append(filaParts[i]);
+            }
+        }
+
+        // Reemplazar fila 2
+        if (lineas.size() < 2) {
+            lineas.add(nuevaFila.toString());
+        } else {
+            lineas.set(1, nuevaFila.toString());
+        }
+
+        // Guardar archivo
+        java.nio.file.Files.write(archivoCSV.toPath(), lineas);
+    }
+
+    // Diálogo para editar el CSV del proyecto 21 (Mesa de Repuestos) - Búsqueda flexible
+    private void abrirDialogoCSVMesaRepuestos(ProyectoAutomatizacion proyecto) {
+        try {
+            // Ruta base para buscar el archivo CSV
+            String rutaBaseSearchs = "C:\\Automatizaciones_V2\\Siniestros\\21- Mesa de Repuestos\\Archivos\\data";
+            
+            // Buscar el archivo CSVBCISeguros.csv de forma flexible
+            java.io.File archivoCSV = buscarArchivoCSVFlexible(new java.io.File(rutaBaseSearchs), "CSVBCISeguros.csv");
+
+            if (archivoCSV == null || !archivoCSV.exists()) {
+                mostrarAlerta("Error", "No se encontró el archivo CSVBCISeguros.csv en:\n" + rutaBaseSearchs + 
+                             "\n\nVerifica que el archivo exista en las subcarpetas.", Alert.AlertType.ERROR);
+                return;
+            }
+
+            // Leer datos actuales del CSV
+            java.util.Map<String, String> datosCSV = leerCSVMesaRepuestos(archivoCSV);
+
+            Dialog<java.util.Map<String, String>> dialog = new Dialog<>();
+            dialog.setTitle("Configurar Datos - " + proyecto.getNombre());
+            dialog.setHeaderText("Editar datos del CSV (Fila 2)");
+
+            ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
+            dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+
+            VBox contenido = new VBox(12);
+            contenido.setPadding(new Insets(18));
+            contenido.setMinWidth(500);
+
+            Label lblInfo = new Label("⚠️ Nota: Los datos se encuentran en la fila 2 del archivo CSV");
+            lblInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #9C27B0; -fx-font-weight: bold;");
+            contenido.getChildren().add(lblInfo);
+
+            Label lblPath = new Label("📁 Archivo: " + archivoCSV.getAbsolutePath());
+            lblPath.setStyle("-fx-font-size: 10px; -fx-text-fill: #666;");
+            contenido.getChildren().add(lblPath);
+
+            // Campo Usuario
+            HBox hboxUsuario = crearCampoEditable("Usuario:", datosCSV.getOrDefault("rut", ""));
+            TextField txtUsuario = (TextField) hboxUsuario.getChildren().get(1);
+
+            // Campo Contraseña
+            HBox hboxPass = crearCampoEditable("Contraseña:", datosCSV.getOrDefault("contrasena", ""));
+            TextField txtPass = (TextField) hboxPass.getChildren().get(1);
+
+            contenido.getChildren().addAll(
+                new Separator(),
+                hboxUsuario,
+                hboxPass
+            );
+
+            dialog.getDialogPane().setContent(contenido);
+            dialog.setResultConverter(dialogButton -> {
+                if (dialogButton == btnGuardar) {
+                    java.util.Map<String, String> nuevosDatos = new java.util.LinkedHashMap<>();
+                    nuevosDatos.put("rut", txtUsuario.getText().trim());
+                    nuevosDatos.put("contrasena", txtPass.getText().trim());
+                    return nuevosDatos;
+                }
+                return null;
+            });
+
+            Optional<java.util.Map<String, String>> resultado = dialog.showAndWait();
+            resultado.ifPresent(nuevosDatos -> {
+                try {
+                    guardarCSVMesaRepuestos(archivoCSV, nuevosDatos);
+                    agregarLog("✅ Datos del CSV actualizados correctamente en: " + archivoCSV.getAbsolutePath());
+                    mostrarAlerta("Éxito", "Datos guardados correctamente en el CSV", Alert.AlertType.INFORMATION);
+                } catch (Exception e) {
+                    agregarLog("❌ Error guardando CSV: " + e.getMessage());
+                    mostrarAlerta("Error", "Error al guardar los datos: " + e.getMessage(), Alert.AlertType.ERROR);
+                }
+            });
+
+        } catch (Exception e) {
+            agregarLog("❌ Error abriendo diálogo: " + e.getMessage());
+            mostrarAlerta("Error", "Error al abrir el diálogo: " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    // Busca un archivo de forma flexible (recursiva) dentro de una carpeta
+    private java.io.File buscarArchivoCSVFlexible(java.io.File carpeta, String nombreArchivo) {
+        if (!carpeta.exists() || !carpeta.isDirectory()) {
+            return null;
+        }
+
+        // Buscar en la carpeta actual
+        java.io.File[] archivos = carpeta.listFiles();
+        if (archivos != null) {
+            for (java.io.File archivo : archivos) {
+                if (archivo.isFile() && archivo.getName().equalsIgnoreCase(nombreArchivo)) {
+                    return archivo;
+                }
+            }
+
+            // Buscar de forma recursiva en subcarpetas
+            for (java.io.File archivo : archivos) {
+                if (archivo.isDirectory()) {
+                    java.io.File encontrado = buscarArchivoCSVFlexible(archivo, nombreArchivo);
+                    if (encontrado != null) {
+                        return encontrado;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // Lee los datos del CSV de Mesa de Repuestos
+    private java.util.Map<String, String> leerCSVMesaRepuestos(java.io.File archivoCSV) throws Exception {
+        java.util.Map<String, String> datos = new java.util.LinkedHashMap<>();
+        java.util.List<String> lineas = java.nio.file.Files.readAllLines(archivoCSV.toPath());
+
+        if (lineas.size() < 2) {
+            throw new Exception("El archivo CSV no tiene suficientes filas");
+        }
+
+        // Leer fila 2 (índice 1)
+        String filaData = lineas.get(1);
+        String[] partes = filaData.split(",");
+
+        if (partes.length > 0) {
+            // Solo RUT y Contraseña
+            datos.put("rut", partes.length > 0 ? partes[0].trim() : "");
+            datos.put("contrasena", partes.length > 1 ? partes[1].trim() : "");
+        }
+
+        return datos;
+    }
+
+    // Guarda los datos en el CSV de Mesa de Repuestos
+    private void guardarCSVMesaRepuestos(java.io.File archivoCSV, java.util.Map<String, String> datos) throws Exception {
+        java.util.List<String> lineas = java.nio.file.Files.readAllLines(archivoCSV.toPath());
+
+        // Construir nueva fila 2 - Solo RUT y Contraseña, preservar el resto de columnas si existen
+        String[] filaParts = lineas.get(1).split(",");
+        StringBuilder nuevaFila = new StringBuilder();
+        nuevaFila.append(datos.get("rut")).append(",").append(datos.get("contrasena"));
+        
+        // Si había más columnas, preservarlas
+        if (filaParts.length > 2) {
+            for (int i = 2; i < filaParts.length; i++) {
+                nuevaFila.append(",").append(filaParts[i]);
+            }
+        }
+
+        // Reemplazar fila 2
+        if (lineas.size() < 2) {
+            lineas.add(nuevaFila.toString());
+        } else {
+            lineas.set(1, nuevaFila.toString());
+        }
+
+        // Guardar archivo
+        java.nio.file.Files.write(archivoCSV.toPath(), lineas);
+    }
+
+    // Diálogo modal para configurar credenciales de proyectos especiales
+    private void abrirDialogoCredencialesEspeciales(ProyectoAutomatizacion proyecto) {
         try {
             // Cargar credenciales actuales
             com.orquestador.modelo.Credenciales cred = com.orquestador.util.GestorCredenciales.cargarCredenciales(proyecto);
@@ -1890,6 +2882,11 @@ public class ControladorPrincipal {
                 vboxCred.getChildren().add(txtPassword);
 
             } else if (nombre.contains("corredores")) {
+                vboxCred.getChildren().add(new Label("RUT:"));
+                TextField txtRut = new TextField(cred.getUser() != null ? cred.getUser() : "");
+                campos.put("rut", txtRut);
+                vboxCred.getChildren().add(txtRut);
+
                 vboxCred.getChildren().add(new Label("Usuario:"));
                 TextField txtUser2 = new TextField(cred.getUser2());
                 campos.put("user2", txtUser2);
@@ -1897,7 +2894,7 @@ public class ControladorPrincipal {
 
                 vboxCred.getChildren().add(new Label("Contraseña:"));
                 PasswordField txtPassword2 = new PasswordField();
-                txtPassword2.setText(cred.getPasword2());
+                txtPassword2.setText(cred.getPasword());
                 campos.put("password2", txtPassword2);
                 vboxCred.getChildren().add(txtPassword2);
 
@@ -1927,8 +2924,16 @@ public class ControladorPrincipal {
                         if (campos.containsKey("user")) credActualizada.setUser(((TextField) campos.get("user")).getText());
                         if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField) campos.get("password")).getText());
                     } else if (nombre.contains("corredores")) {
+                        // RUT va a datos1.user
+                        if (campos.containsKey("rut")) credActualizada.setUser(((TextField) campos.get("rut")).getText());
+                        // Usuario va a datos2.user2
                         if (campos.containsKey("user2")) credActualizada.setUser2(((TextField) campos.get("user2")).getText());
-                        if (campos.containsKey("password2")) credActualizada.setPasword2(((PasswordField) campos.get("password2")).getText());
+                        // Contraseña va a datos1.pasword Y datos2.pasword2
+                        if (campos.containsKey("password2")) {
+                            String password = ((PasswordField) campos.get("password2")).getText();
+                            credActualizada.setPasword(password);
+                            credActualizada.setPasword2(password);
+                        }
                     } else {
                         if (campos.containsKey("user")) credActualizada.setUser(((TextField) campos.get("user")).getText());
                         if (campos.containsKey("password")) credActualizada.setPasword(((PasswordField) campos.get("password")).getText());
@@ -2002,12 +3007,14 @@ public class ControladorPrincipal {
     
     private void ejecutarPorArea() {
         String areaSeleccionada = cboFiltroArea.getValue();
+        String empresaSeleccionada = cboFiltroEmpresa != null ? cboFiltroEmpresa.getValue() : null;
         if (areaSeleccionada == null || areaSeleccionada.equals("Todas")) {
             mostrarAlerta("Advertencia", "Selecciona un Area especifica", Alert.AlertType.WARNING);
             return;
         }
         
         List<ProyectoAutomatizacion> porArea = proyectos.stream()
+            .filter(p -> empresaSeleccionada == null || "Todas".equals(empresaSeleccionada) || empresaSeleccionada.equals(p.getEmpresa()))
             .filter(p -> p.getArea().equals(areaSeleccionada))
             .filter(p -> !isProyectoDeshabilitado(p.getNombre()))
             .collect(Collectors.toList());
@@ -2025,89 +3032,114 @@ public class ControladorPrincipal {
             mostrarAlerta("Advertencia", "Ya hay una ejecucin en curso", Alert.AlertType.WARNING);
             return;
         }
-        
+
         ejecutando = true;
+        cancelRequested = false;
         btnEjecutarSeleccionados.setDisable(true);
         btnCancelarEjecucion.setDisable(false);
         btnAgregar.setDisable(true);
         btnEliminar.setDisable(true);
+
+        // Guardar la lista de proyectos en ejecución para poder cancelarlos después
+        proyectosEnEjecucion = new ArrayList<>(listaProyectos);
         
         // Guardar los proyectos que se ejecutarán para desmarcarlos después
         List<ProyectoAutomatizacion> proyectosAEjecutar = new ArrayList<>(listaProyectos);
-        
+
         agregarLog("\n========================================");
         agregarLog(" INICIANDO EJECUCIN");
         agregarLog("Total de proyectos: " + listaProyectos.size());
         agregarLog("========================================\n");
-        
+
         // Agrupar por VPN
         Map<TipoVPN, List<ProyectoAutomatizacion>> grupos = agruparPorVPN(listaProyectos);
-        
+
         // Determinar orden de ejecucin
         List<TipoVPN> ordenEjecucion = determinarOrdenVPN(grupos);
-        
+
         agregarLog(" Distribucin por VPN:");
         for (TipoVPN tipo : ordenEjecucion) {
             agregarLog("   " + tipo.getDescripcion() + ": " + grupos.get(tipo).size() + " proyecto(s)");
         }
         agregarLog("");
-        
+
+        // Resetear estado de proyectos cancelados a PENDIENTE para permitir re-ejecución
+        for (ProyectoAutomatizacion proyecto : listaProyectos) {
+            if (proyecto.getEstado() == EstadoEjecucion.CANCELADO || 
+                proyecto.getEstado() == EstadoEjecucion.FALLIDO ||
+                proyecto.getEstado() == EstadoEjecucion.EJECUTANDO) {
+                proyecto.setEstado(EstadoEjecucion.PENDIENTE);
+                proyecto.resetearReintentos();
+            }
+            // Sincronizar estado de retry de TODOS los proyectos con el valor global
+            proyecto.setRetryHabilitado(retryGlobalHabilitado);
+            proyecto.setIntentoActual(0);
+        }
+
         // Registrar tiempo de inicio
         tiempoInicioEjecucion = System.currentTimeMillis();
-        
+
         // Ejecutar en hilo separado
-        new Thread(() -> {
+        threadEjecucion = new Thread(() -> {
             try {
+                outer:
                 for (TipoVPN tipoVPN : ordenEjecucion) {
-                    List<ProyectoAutomatizacion> grupoVPN = grupos.get(tipoVPN);
+                    // Verificar si se canceló antes de procesar el siguiente grupo
+                    if (!ejecutando || cancelRequested || Thread.currentThread().isInterrupted()) {
+                        break outer;
+                    }
                     
+                    List<ProyectoAutomatizacion> grupoVPN = grupos.get(tipoVPN);
+
                     // Mostrar popup de VPN si es necesario
                     if (tipoVPN != TipoVPN.SIN_VPN && tipoVPN != TipoVPN.HIBRIDO) {
                         mostrarPopupVPN(tipoVPN, true);
                     }
-                    
+
                     // Ejecutar proyectos del grupo
                     for (ProyectoAutomatizacion proyecto : grupoVPN) {
-                        if (!ejecutando) break;
-                        
+                        if (!ejecutando || cancelRequested || Thread.currentThread().isInterrupted()) {
+                            break outer;
+                        }
                         ejecutarProyectoSync(proyecto);
                     }
-                    
+
                     // Mostrar popup de desconexin si es necesario
                     if (tipoVPN != TipoVPN.SIN_VPN && tipoVPN != TipoVPN.HIBRIDO) {
                         mostrarPopupVPN(tipoVPN, false);
                     }
                 }
-                
+
                 Platform.runLater(() -> {
                     agregarLog("\n========================================");
                     agregarLog(" Ejecucion COMPLETADA");
-                    
+
                     // Calcular y mostrar tiempo total
                     long tiempoFin = System.currentTimeMillis();
                     long duracionMs = tiempoFin - tiempoInicioEjecucion;
                     String tiempoTotal = formatearTiempoTotal(duracionMs);
                     agregarLog(" Tiempo total de ejecucion: " + tiempoTotal);
-                    
+
                     agregarLog("========================================\n");
-                    
+
                     // Desmarcar los checkboxes de los proyectos ejecutados
                     for (ProyectoAutomatizacion proyecto : proyectosAEjecutar) {
                         proyecto.setSeleccionado(false);
                     }
                     tablaProyectos.refresh();
                     guardarProyectos();
-                    
+
                     finalizarEjecucion();
                 });
-                
+
             } catch (Exception e) {
                 Platform.runLater(() -> {
                     agregarLog(" Error en la Ejecucion: " + e.getMessage());
                     finalizarEjecucion();
                 });
             }
-        }).start();
+        });
+        threadEjecucion.start();
     }
     
     private Map<TipoVPN, List<ProyectoAutomatizacion>> agruparPorVPN(List<ProyectoAutomatizacion> proyectos) {
@@ -2116,10 +3148,16 @@ public class ControladorPrincipal {
             grupos.put(tipo, new ArrayList<>());
         }
         
+        int proyectosAgrupados = 0;
         for (ProyectoAutomatizacion proyecto : proyectos) {
-            if (isProyectoDeshabilitado(proyecto.getNombre())) continue;
+            if (isProyectoDeshabilitado(proyecto.getNombre())) {
+                agregarLog(" [DEBUG] Proyecto deshabilitado saltado: " + proyecto.getNombre());
+                continue;
+            }
             grupos.get(proyecto.getTipoVPN()).add(proyecto);
+            proyectosAgrupados++;
         }
+        agregarLog(" [DEBUG] Total de proyectos agrupados: " + proyectosAgrupados + " de " + proyectos.size());
         
         return grupos;
     }
@@ -2195,9 +3233,51 @@ public class ControladorPrincipal {
     private void ejecutarProyectoSync(ProyectoAutomatizacion proyecto) {
         final Object lock = new Object();
         final boolean[] terminado = {false};
+        final boolean[] exitoso = {false};
+        
+        // Si retry está habilitado globalmente, usar la lógica de reintentos
+        // retryGlobalHabilitado es la única fuente de verdad para todos los proyectos
+        if (!cancelRequested && retryGlobalHabilitado) {
+            ejecutarConReintentos(proyecto, lock, terminado, exitoso);
+        } else {
+            // Ejecución normal sin reintentos
+            ejecutarProyectoUnaVez(proyecto, lock, terminado, exitoso);
+        }
+        
+        // Esperar a que termine
+        synchronized (lock) {
+            while (!terminado[0] && !cancelRequested) {
+                try {
+                    lock.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+    }
+    
+    private void ejecutarProyectoUnaVez(ProyectoAutomatizacion proyecto, Object lock, boolean[] terminado, boolean[] exitoso) {
+        // Verificar si se canceló antes de comenzar
+        if (!ejecutando || cancelRequested || proyecto.getEstado() == EstadoEjecucion.CANCELADO) {
+            Platform.runLater(() -> {
+                if (proyecto.getEstado() != EstadoEjecucion.CANCELADO) {
+                    proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                }
+                tablaProyectos.refresh();
+                actualizarEstadisticas();
+                guardarProyectos();
+            });
+            synchronized (lock) {
+                terminado[0] = true;
+                lock.notify();
+            }
+            return;
+        }
         
         Platform.runLater(() -> {
             proyecto.setEstado(EstadoEjecucion.EJECUTANDO);
+            proyecto.setIntentoActual(1);
             tablaProyectos.refresh();
         });
         
@@ -2211,27 +3291,157 @@ public class ControladorPrincipal {
                 });
                 synchronized (lock) {
                     terminado[0] = true;
+                    exitoso[0] = proyecto.getEstado() == EstadoEjecucion.EXITOSO;
                     lock.notify();
                 }
             }
         );
+    }
+    
+    private void ejecutarConReintentos(ProyectoAutomatizacion proyecto, Object lock, boolean[] terminado, boolean[] exitoso) {
+        final int maxReintentos = 3;
         
-        // Esperar a que termine
-        synchronized (lock) {
-            while (!terminado[0]) {
+        for (int intento = 1; intento <= maxReintentos; intento++) {
+            // Verificar si se canceló la ejecución ANTES de cambiar el estado a EJECUTANDO
+            if (!ejecutando || cancelRequested || proyecto.getEstado() == EstadoEjecucion.CANCELADO || Thread.currentThread().isInterrupted()) {
+                Platform.runLater(() -> {
+                    if (proyecto.getEstado() != EstadoEjecucion.CANCELADO) {
+                        proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                    }
+                    tablaProyectos.refresh();
+                    actualizarEstadisticas();
+                    guardarProyectos();
+                });
+                break; // SALIR del loop de reintentos
+            }
+            
+            final int intentoActual = intento;
+            
+            // Solo cambiar a EJECUTANDO si NO fue cancelado
+            Platform.runLater(() -> {
+                proyecto.setEstado(EstadoEjecucion.EJECUTANDO);
+                proyecto.setIntentoActual(intentoActual);
+                tablaProyectos.refresh();
+                agregarLog("🔄 Intento " + intentoActual + "/" + maxReintentos + " para: " + proyecto.getNombre());
+            });
+            
+            final boolean[] intentoTerminado = {false};
+            final Object intentoLock = new Object();
+            
+            ejecutor.ejecutarProyecto(proyecto, 
+                mensaje -> Platform.runLater(() -> agregarLog(mensaje)),
+                () -> {
+                    synchronized (intentoLock) {
+                        intentoTerminado[0] = true;
+                        intentoLock.notify();
+                    }
+                }
+            );
+            
+            // Esperar a que termine este intento
+            synchronized (intentoLock) {
+                while (!intentoTerminado[0]) {
+                    try {
+                        intentoLock.wait();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            
+            // Verificar nuevamente si se canceló durante la ejecución o si el thread fue interrumpido
+            if (!ejecutando || cancelRequested || proyecto.getEstado() == EstadoEjecucion.CANCELADO || Thread.currentThread().isInterrupted()) {
+                Platform.runLater(() -> {
+                    if (proyecto.getEstado() != EstadoEjecucion.CANCELADO) {
+                        proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                    }
+                    tablaProyectos.refresh();
+                    actualizarEstadisticas();
+                    guardarProyectos();
+                });
+                break; // SALIR del loop de reintentos
+            }
+            
+            // Verificar si fue exitoso
+            if (proyecto.getEstado() == EstadoEjecucion.EXITOSO) {
+                Platform.runLater(() -> {
+                    agregarLog("✅ Proyecto completado exitosamente en intento " + intentoActual);
+                    tablaProyectos.refresh();
+                    actualizarEstadisticas();
+                    guardarProyectos();
+                });
+                exitoso[0] = true;
+                break; // Salir del loop si fue exitoso
+            } else if (intento < maxReintentos) {
+                // Verificar ANTES de preparar el siguiente reintento
+                if (!ejecutando || cancelRequested || proyecto.getEstado() == EstadoEjecucion.CANCELADO || Thread.currentThread().isInterrupted()) {
+                    Platform.runLater(() -> {
+                        if (proyecto.getEstado() != EstadoEjecucion.CANCELADO) {
+                            proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                        }
+                        tablaProyectos.refresh();
+                        actualizarEstadisticas();
+                        guardarProyectos();
+                    });
+                    break; // SALIR del loop de reintentos
+                }
+                
+                // Si no fue exitoso y no es el último intento, esperar un poco antes de reintentar
+                Platform.runLater(() -> {
+                    agregarLog("⏳ Preparando reintento " + (intentoActual + 1) + "...");
+                });
                 try {
-                    lock.wait();
+                    Thread.sleep(2000); // Esperar 2 segundos entre reintentos
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    // Si se interrumpe el sleep, salir inmediatamente
+                    Platform.runLater(() -> {
+                        if (proyecto.getEstado() != EstadoEjecucion.CANCELADO) {
+                            proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                        }
+                        tablaProyectos.refresh();
+                        actualizarEstadisticas();
+                        guardarProyectos();
+                    });
                     break;
                 }
             }
+        }
+        
+        Platform.runLater(() -> {
+            tablaProyectos.refresh();
+            actualizarEstadisticas();
+            guardarProyectos();
+        });
+        
+        synchronized (lock) {
+            terminado[0] = true;
+            lock.notify();
         }
     }
     
     private void cancelarEjecucion() {
         // No desactivar 'ejecutando' aquí: esperar confirmación de cierre antes de permitir nuevas ejecuciones
+        cancelRequested = true;
         agregarLog("🚫 EJECUCIÓN CANCELADA - Iniciando detención. Verificando cierre de procesos...");
+        
+        // Marcar todos los proyectos restantes como CANCELADOS
+        for (ProyectoAutomatizacion proyecto : proyectosEnEjecucion) {
+            if (proyecto.getEstado() == EstadoEjecucion.PENDIENTE) {
+                proyecto.setEstado(EstadoEjecucion.CANCELADO);
+                agregarLog("  ⚠️ Proyecto cancelado: " + proyecto.getNombre());
+            }
+        }
+        
+        tablaProyectos.refresh();
+        guardarProyectos();
+        
+        // Interrumpir el thread de ejecución para que se detenga inmediatamente
+        if (threadEjecucion != null && threadEjecucion.isAlive()) {
+            threadEjecucion.interrupt();
+        }
+        
         ejecutor.detener();
 
         // Ejecutar la verificación de cierre en background para no bloquear la UI
@@ -2263,7 +3473,7 @@ public class ControladorPrincipal {
                 if (!registry.isEmpty()) {
                     agregarLog("⚠️ Algunos procesos no pudieron cerrarse correctamente, se forzó cierre final.");
                 } else {
-                    agregarLog("✅ Todos los procesos finalizaron. Listo para nueva ejecución.");
+                    agregarLog("✅ Todos los procesos finalizaron. Ejecución cancelada exitosamente.");
                 }
                 // Restaurar estado UI
                 finalizarEjecucion();
@@ -2400,6 +3610,9 @@ public class ControladorPrincipal {
 
     private void finalizarEjecucion() {
         ejecutando = false;
+        cancelRequested = false;
+        threadEjecucion = null; // Limpiar la referencia al thread
+        proyectosEnEjecucion.clear(); // Limpiar la lista de proyectos en ejecución
         btnEjecutarSeleccionados.setDisable(false);
         btnCancelarEjecucion.setDisable(true);
         btnAgregar.setDisable(false);
@@ -2408,12 +3621,17 @@ public class ControladorPrincipal {
     }
     
     private void aplicarFiltro() {
-        String filtroArea = cboFiltroArea.getValue();
+        String filtroEmpresa = cboFiltroEmpresa != null ? cboFiltroEmpresa.getValue() : null;
+        String filtroArea = cboFiltroArea != null ? cboFiltroArea.getValue() : null;
         String filtroVpn = cboFiltroVPN != null ? cboFiltroVPN.getValue() : null;
 
         proyectosFiltrados.setPredicate(p -> {
+            boolean empresaOk = true;
             boolean areaOk = true;
             boolean vpnOk = true;
+            if (filtroEmpresa != null && !filtroEmpresa.equals("Todas")) {
+                empresaOk = p.getEmpresa() != null && p.getEmpresa().equals(filtroEmpresa);
+            }
             if (filtroArea != null && !filtroArea.equals("Todas")) {
                 areaOk = p.getArea() != null && p.getArea().equals(filtroArea);
             }
@@ -2435,7 +3653,7 @@ public class ControladorPrincipal {
                         vpnOk = true;
                 }
             }
-            return areaOk && vpnOk;
+            return empresaOk && areaOk && vpnOk;
         });
 
         actualizarEstadisticas();
@@ -2465,6 +3683,95 @@ public class ControladorPrincipal {
         actualizarEstadisticas();
 
         agregarLog("✅ Tabla limpiada y lista para nueva ejecución - " + proyectos.size() + " proyecto(s)");
+    }
+
+    private void normalizarEmpresasEnProyectos() {
+        for (ProyectoAutomatizacion proyecto : proyectos) {
+            if (proyecto.getEmpresa() == null || proyecto.getEmpresa().trim().isEmpty()) {
+                proyecto.setEmpresa(EMPRESA_DEFAULT);
+            }
+        }
+    }
+
+    private java.util.Set<String> obtenerEmpresasDesdeProyectos() {
+        java.util.Set<String> empresas = new java.util.LinkedHashSet<>();
+        for (ProyectoAutomatizacion proyecto : proyectos) {
+            if (proyecto.getEmpresa() != null && !proyecto.getEmpresa().trim().isEmpty()) {
+                empresas.add(proyecto.getEmpresa().trim());
+            }
+        }
+        return empresas;
+    }
+
+    private void refrescarEmpresasDisponibles(String seleccionPreferida) {
+        if (cboFiltroEmpresa == null) return;
+
+        empresasRegistradas.add(EMPRESA_DEFAULT);
+        empresasRegistradas.addAll(obtenerEmpresasDesdeProyectos());
+
+        java.util.List<String> items = new java.util.ArrayList<>();
+        items.add("Todas");
+        items.addAll(empresasRegistradas);
+
+        cboFiltroEmpresa.getItems().setAll(items);
+
+        String seleccionActual = seleccionPreferida != null ? seleccionPreferida : cboFiltroEmpresa.getValue();
+        if (seleccionActual != null && cboFiltroEmpresa.getItems().contains(seleccionActual)) {
+            cboFiltroEmpresa.setValue(seleccionActual);
+        } else {
+            cboFiltroEmpresa.setValue(EMPRESA_DEFAULT);
+        }
+    }
+
+    private void agregarEmpresa() {
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("Nueva empresa");
+        dialog.setHeaderText("Agregar empresa al selector");
+        dialog.setContentText("Nombre de empresa:");
+
+        Optional<String> resultado = dialog.showAndWait();
+        if (resultado.isEmpty()) return;
+
+        String nuevaEmpresa = resultado.get().trim();
+        if (nuevaEmpresa.isEmpty()) {
+            mostrarAlerta("Empresa inválida", "El nombre de empresa no puede estar vacío.", Alert.AlertType.WARNING);
+            return;
+        }
+
+        empresasRegistradas.add(nuevaEmpresa);
+        refrescarEmpresasDisponibles(nuevaEmpresa);
+        guardarPreferencias();
+        aplicarFiltro();
+        agregarLog("✅ Empresa agregada al selector: " + nuevaEmpresa);
+    }
+
+    private void quitarEmpresaSeleccionada() {
+        if (cboFiltroEmpresa == null) return;
+        String empresa = cboFiltroEmpresa.getValue();
+
+        if (empresa == null || empresa.equals("Todas")) {
+            mostrarAlerta("Selecciona empresa", "Selecciona una empresa específica para quitarla.", Alert.AlertType.WARNING);
+            return;
+        }
+        if (EMPRESA_DEFAULT.equals(empresa)) {
+            mostrarAlerta("Acción no permitida", "No puedes quitar la empresa base '" + EMPRESA_DEFAULT + "'.", Alert.AlertType.WARNING);
+            return;
+        }
+
+        long usados = proyectos.stream()
+            .filter(p -> empresa.equals(p.getEmpresa()))
+            .count();
+
+        if (usados > 0) {
+            mostrarAlerta("No se puede quitar", "La empresa tiene " + usados + " proyecto(s) asociado(s). Reasigna o elimina esos proyectos primero.", Alert.AlertType.WARNING);
+            return;
+        }
+
+        empresasRegistradas.remove(empresa);
+        refrescarEmpresasDisponibles(EMPRESA_DEFAULT);
+        guardarPreferencias();
+        aplicarFiltro();
+        agregarLog("🗑️ Empresa removida del selector: " + empresa);
     }
     
     private void actualizarEstadisticas() {
@@ -2628,6 +3935,7 @@ public class ControladorPrincipal {
                         proyAuto.setReporteGenerado(true); // Marcar como generado
                         final String docWord = proyecto.getDocumentoWordGenerado();
                         final String docPdf = proyecto.getDocumentoPdfGenerado();
+                        final java.util.List<String> advertencias = generador.getAdvertencias();
                         
                         // Contar cuántos informes se generaron (por los PDFs separados por ;)
                         final int cantidadInformes = docPdf != null ? docPdf.split(";").length : 1;
@@ -2646,6 +3954,11 @@ public class ControladorPrincipal {
                             } else if (docPdf != null) {
                                 String nombrePdf = new java.io.File(docPdf).getName();
                                 agregarLog("    PDF: " + nombrePdf);
+                            }
+                            if (advertencias != null && !advertencias.isEmpty()) {
+                                for (String adv : advertencias) {
+                                    agregarLog("    WARN: " + adv);
+                                }
                             }
                             tablaProyectos.refresh(); // Actualizar tabla para mostrar ✅
                         });
@@ -2694,6 +4007,259 @@ public class ControladorPrincipal {
                 mostrarAlerta("Informes Generados", mensaje, 
                     (totalInformesFallidos == 0 && totalProyectosFallidos == 0) ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING);
             });
+        }).start();
+    }
+    
+    /**
+     * Genera un informe de ejecución en Excel con todos los proyectos
+     */
+    private void generarInformeExcel() {
+        // Abrir FileChooser para seleccionar ubicación de guardado
+        javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
+        fileChooser.setTitle("Guardar Informe de Ejecución");
+        fileChooser.setInitialFileName("Informe_Ejecucion_" + 
+            LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm")) + ".xlsx");
+        
+        fileChooser.getExtensionFilters().add(
+            new javafx.stage.FileChooser.ExtensionFilter("Archivo Excel", "*.xlsx")
+        );
+        
+        // Intentar abrir en la carpeta de descargas por defecto
+        String userHome = System.getProperty("user.home");
+        File descargas = new File(userHome, "Downloads");
+        if (!descargas.exists()) {
+            descargas = new File(userHome, "Descargas");
+        }
+        if (descargas.exists()) {
+            fileChooser.setInitialDirectory(descargas);
+        }
+        
+        File archivoDestino = fileChooser.showSaveDialog(root.getScene().getWindow());
+        
+        if (archivoDestino == null) {
+            return; // Usuario canceló
+        }
+        
+        // Generar el Excel en un hilo separado para no bloquear la UI
+        new Thread(() -> {
+            try {
+                // Crear workbook y hoja
+                org.apache.poi.ss.usermodel.Workbook workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
+                org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("Informe de Ejecución");
+                
+                // Crear estilos
+                org.apache.poi.ss.usermodel.CellStyle headerStyle = workbook.createCellStyle();
+                org.apache.poi.ss.usermodel.Font headerFont = workbook.createFont();
+                headerFont.setBold(true);
+                headerFont.setFontHeightInPoints((short) 12);
+                headerFont.setColor(org.apache.poi.ss.usermodel.IndexedColors.WHITE.getIndex());
+                headerStyle.setFont(headerFont);
+                headerStyle.setFillForegroundColor(org.apache.poi.ss.usermodel.IndexedColors.DARK_BLUE.getIndex());
+                headerStyle.setFillPattern(org.apache.poi.ss.usermodel.FillPatternType.SOLID_FOREGROUND);
+                headerStyle.setBorderBottom(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                headerStyle.setBorderTop(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                headerStyle.setBorderLeft(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                headerStyle.setBorderRight(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                headerStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
+                
+                org.apache.poi.ss.usermodel.CellStyle dataStyle = workbook.createCellStyle();
+                dataStyle.setBorderBottom(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                dataStyle.setBorderTop(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                dataStyle.setBorderLeft(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                dataStyle.setBorderRight(org.apache.poi.ss.usermodel.BorderStyle.THIN);
+                
+                // Estilo para proyectos deshabilitados (texto rojo)
+                org.apache.poi.ss.usermodel.CellStyle disabledStyle = workbook.createCellStyle();
+                disabledStyle.cloneStyleFrom(dataStyle);
+                org.apache.poi.ss.usermodel.Font redFont = workbook.createFont();
+                redFont.setColor(org.apache.poi.ss.usermodel.IndexedColors.RED.getIndex());
+                redFont.setBold(true);
+                disabledStyle.setFont(redFont);
+                
+                org.apache.poi.ss.usermodel.CellStyle dateStyle = workbook.createCellStyle();
+                dateStyle.cloneStyleFrom(dataStyle);
+                org.apache.poi.ss.usermodel.CreationHelper createHelper = workbook.getCreationHelper();
+                dateStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd/mm/yyyy hh:mm"));
+                
+                // Crear fila de encabezados
+                org.apache.poi.ss.usermodel.Row headerRow = sheet.createRow(0);
+                String[] columnas = {"Nombre", "Área", "Retry", "Estado", "Última Ejecución", "Duración"};
+                
+                for (int i = 0; i < columnas.length; i++) {
+                    org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
+                    cell.setCellValue(columnas[i]);
+                    cell.setCellStyle(headerStyle);
+                }
+                
+                // Agregar datos de todos los proyectos
+                int rowNum = 1;
+                for (ProyectoAutomatizacion proyecto : proyectos) {
+                    org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowNum++);
+                    
+                    // Nombre
+                    org.apache.poi.ss.usermodel.Cell cell0 = row.createCell(0);
+                    cell0.setCellValue(proyecto.getNombre() != null ? proyecto.getNombre() : "");
+                    cell0.setCellStyle(dataStyle);
+                    
+                    // Área
+                    org.apache.poi.ss.usermodel.Cell cell1 = row.createCell(1);
+                    cell1.setCellValue(proyecto.getArea() != null ? proyecto.getArea() : "");
+                    cell1.setCellStyle(dataStyle);
+                    
+                    // Retry
+                    org.apache.poi.ss.usermodel.Cell cell2 = row.createCell(2);
+                    String retryText = proyecto.getFormatoRetry();
+                    cell2.setCellValue(retryText != null && !retryText.isEmpty() ? retryText : "-");
+                    cell2.setCellStyle(dataStyle);
+                    
+                    // Estado - Verificar si está deshabilitado
+                    org.apache.poi.ss.usermodel.Cell cell3 = row.createCell(3);
+                    boolean esDeshabilitado = isProyectoDeshabilitado(proyecto.getNombre());
+                    if (esDeshabilitado) {
+                        cell3.setCellValue("Deshabilitado");
+                        cell3.setCellStyle(disabledStyle);
+                    } else {
+                        cell3.setCellValue(proyecto.getEstado() != null ? proyecto.getEstado().getDescripcion() : "Pendiente");
+                        cell3.setCellStyle(dataStyle);
+                    }
+                    
+                    // Última Ejecución
+                    org.apache.poi.ss.usermodel.Cell cell4 = row.createCell(4);
+                    if (proyecto.getUltimaEjecucion() != null) {
+                        LocalDateTime ultimaEjecucion = proyecto.getUltimaEjecucion();
+                        String fechaFormateada = ultimaEjecucion.format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
+                        cell4.setCellValue(fechaFormateada);
+                    } else {
+                        cell4.setCellValue("No ejecutado");
+                    }
+                    cell4.setCellStyle(dataStyle);
+                    
+                    // Duración (convertir segundos a minutos + segundos)
+                    org.apache.poi.ss.usermodel.Cell cell5 = row.createCell(5);
+                    if (proyecto.getDuracionSegundos() != null && proyecto.getDuracionSegundos() > 0) {
+                        int totalSegundos = proyecto.getDuracionSegundos();
+                        int minutos = totalSegundos / 60;
+                        int segundos = totalSegundos % 60;
+                        
+                        String duracionFormato;
+                        if (minutos > 0 && segundos > 0) {
+                            duracionFormato = minutos + " min " + segundos + " seg";
+                        } else if (minutos > 0) {
+                            duracionFormato = minutos + " min";
+                        } else {
+                            duracionFormato = segundos + " seg";
+                        }
+                        cell5.setCellValue(duracionFormato);
+                    } else {
+                        cell5.setCellValue("-");
+                    }
+                    cell5.setCellStyle(dataStyle);
+                }
+                
+                // ── Fila de Tiempo Total de Ejecución ──────────────────────────
+                long totalSegundosTotal = 0;
+                for (ProyectoAutomatizacion p : proyectos) {
+                    if (p.getDuracionSegundos() != null && p.getDuracionSegundos() > 0) {
+                        totalSegundosTotal += p.getDuracionSegundos();
+                    }
+                }
+
+                // Estilo encabezado de la fila total (fondo azul oscuro, negrita, blanco)
+                org.apache.poi.ss.usermodel.CellStyle totalLabelStyle = workbook.createCellStyle();
+                totalLabelStyle.cloneStyleFrom(headerStyle);
+                totalLabelStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.RIGHT);
+
+                // Estilo valor total (fondo amarillo, negrita)
+                org.apache.poi.ss.usermodel.CellStyle totalValueStyle = workbook.createCellStyle();
+                totalValueStyle.cloneStyleFrom(dataStyle);
+                org.apache.poi.ss.usermodel.Font totalFont = workbook.createFont();
+                totalFont.setBold(true);
+                totalFont.setFontHeightInPoints((short) 11);
+                totalValueStyle.setFont(totalFont);
+                totalValueStyle.setFillForegroundColor(org.apache.poi.ss.usermodel.IndexedColors.LIGHT_YELLOW.getIndex());
+                totalValueStyle.setFillPattern(org.apache.poi.ss.usermodel.FillPatternType.SOLID_FOREGROUND);
+                totalValueStyle.setAlignment(org.apache.poi.ss.usermodel.HorizontalAlignment.CENTER);
+
+                org.apache.poi.ss.usermodel.Row totalRow = sheet.createRow(rowNum);
+
+                // Celdas 0-4: etiqueta "Tiempo Total de Ejecución" (fusionadas)
+                for (int i = 0; i < 5; i++) {
+                    org.apache.poi.ss.usermodel.Cell tc = totalRow.createCell(i);
+                    tc.setCellStyle(totalLabelStyle);
+                    if (i == 0) tc.setCellValue("Tiempo Total de Ejecución");
+                }
+                sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(rowNum, rowNum, 0, 4));
+
+                // Celda 5: valor formateado en horas y minutos
+                long horas    = totalSegundosTotal / 3600;
+                long minutos  = (totalSegundosTotal % 3600) / 60;
+                long segundos = totalSegundosTotal % 60;
+
+                String tiempoTotalStr;
+                if (horas > 0) {
+                    tiempoTotalStr = horas + " h " + minutos + " min " + segundos + " seg";
+                } else if (minutos > 0) {
+                    tiempoTotalStr = minutos + " min " + segundos + " seg";
+                } else {
+                    tiempoTotalStr = segundos + " seg";
+                }
+
+                org.apache.poi.ss.usermodel.Cell totalCell = totalRow.createCell(5);
+                totalCell.setCellValue(tiempoTotalStr);
+                totalCell.setCellStyle(totalValueStyle);
+                // ────────────────────────────────────────────────────────────────
+
+                // Ajustar ancho de columnas
+                for (int i = 0; i < columnas.length; i++) {
+                    sheet.autoSizeColumn(i);
+                    // Agregar un poco más de espacio
+                    int currentWidth = sheet.getColumnWidth(i);
+                    sheet.setColumnWidth(i, currentWidth + 1000);
+                }
+                
+                // Guardar archivo
+                try (java.io.FileOutputStream fileOut = new java.io.FileOutputStream(archivoDestino)) {
+                    workbook.write(fileOut);
+                }
+                workbook.close();
+                
+                // Mostrar mensaje de éxito y abrir archivo
+                Platform.runLater(() -> {
+                    Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                    alert.setTitle("Informe Generado");
+                    alert.setHeaderText("✅ Informe de Ejecución generado correctamente");
+                    alert.setContentText(
+                        "Archivo: " + archivoDestino.getName() + "\n" +
+                        "Ubicación: " + archivoDestino.getParent() + "\n" +
+                        "Proyectos incluidos: " + proyectos.size() + "\n\n" +
+                        "¿Desea abrir el archivo?"
+                    );
+                    
+                    ButtonType btnAbrir = new ButtonType("Abrir", ButtonBar.ButtonData.YES);
+                    ButtonType btnCerrar = new ButtonType("Cerrar", ButtonBar.ButtonData.NO);
+                    alert.getButtonTypes().setAll(btnAbrir, btnCerrar);
+                    
+                    alert.showAndWait().ifPresent(response -> {
+                        if (response == btnAbrir) {
+                            try {
+                                java.awt.Desktop.getDesktop().open(archivoDestino);
+                            } catch (Exception e) {
+                                mostrarAlerta("Error", "No se pudo abrir el archivo: " + e.getMessage(), Alert.AlertType.ERROR);
+                            }
+                        }
+                    });
+                    
+                    agregarLog("✓ Informe Excel generado: " + archivoDestino.getName());
+                });
+                
+            } catch (Exception e) {
+                Platform.runLater(() -> {
+                    mostrarAlerta("Error", 
+                        "Error al generar el informe Excel:\n" + e.getMessage(), 
+                        Alert.AlertType.ERROR);
+                    e.printStackTrace();
+                });
+            }
         }).start();
     }
     
@@ -3400,7 +4966,190 @@ public class ControladorPrincipal {
         vbox.getChildren().addAll(imageView, lblNombre, btnAgregar);
         return vbox;
     }
-    
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Configuración de Correo por Área
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Abre el diálogo para crear/editar configuraciones de correo por área.
+     * Cada área tiene sus propios destinatarios, CC, cuerpo y ruta de PDFs.
+     */
+    private void mostrarDialogoConfiguracionCorreo() {
+        Dialog<Void> dialog = new Dialog<>();
+        dialog.setTitle("Configuración de Correo por Área");
+        dialog.setHeaderText("Define los parámetros de envío de correo para cada área");
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.CLOSE);
+        dialog.getDialogPane().setPrefSize(820, 650);
+
+        // ── Panel izquierdo: lista de áreas configuradas ──
+        ListView<ConfiguracionCorreo> listaAreas = new ListView<>();
+        listaAreas.getItems().addAll(configsCorreo);
+        listaAreas.setPrefWidth(190);
+        listaAreas.setPlaceholder(new Label("Sin configuraciones"));
+
+        Button btnNuevaConfig  = new Button("➕ Nueva área");
+        Button btnEliminarConfig = new Button("🗑 Eliminar");
+        btnEliminarConfig.setStyle("-fx-text-fill: #c62828;");
+        HBox botonesLista = new HBox(6, btnNuevaConfig, btnEliminarConfig);
+        VBox panelLista = new VBox(6, new Label("Áreas configuradas:"), listaAreas, botonesLista);
+        panelLista.setPadding(new Insets(8));
+
+        // ── Panel derecho: formulario de edición ──
+        Label lblAreaNombre   = new Label("Área:");
+        ComboBox<String> cboArea = new ComboBox<>();
+        // Cargar áreas disponibles desde proyectos + las ya configuradas
+        java.util.TreeSet<String> areasDisponibles = new java.util.TreeSet<>();
+        proyectos.forEach(p -> { if (p.getArea() != null) areasDisponibles.add(p.getArea()); });
+        configsCorreo.forEach(c -> { if (c.getArea() != null) areasDisponibles.add(c.getArea()); });
+        cboArea.getItems().addAll(areasDisponibles);
+        cboArea.setEditable(true);
+        cboArea.setPrefWidth(300);
+
+        Label lblPara   = new Label("Para (separar con ;):");
+        TextArea txtPara = new TextArea();
+        txtPara.setPrefRowCount(2);
+        txtPara.setWrapText(true);
+
+        Label lblCC     = new Label("CC (separar con ;):");
+        TextArea txtCC  = new TextArea();
+        txtCC.setPrefRowCount(2);
+        txtCC.setWrapText(true);
+
+        Label lblAsunto  = new Label("Asunto  — Placeholders: {area}, {fecha}");
+        TextField txtAsunto = new TextField();
+
+        Label lblIntro   = new Label("Cuerpo — Introducción (antes de la lista):");
+        TextArea txtIntro = new TextArea();
+        txtIntro.setPrefRowCount(4);
+        txtIntro.setWrapText(true);
+
+        Label lblCierre  = new Label("Cuerpo — Cierre (después de la lista de proyectos):");
+        TextArea txtCierre = new TextArea();
+        txtCierre.setPrefRowCount(3);
+        txtCierre.setWrapText(true);
+
+        Label lblRutaPDF = new Label("Ruta de carpeta PDFs (solo PDF post-fecha de tarea se adjuntan):");
+        TextField txtRutaPDF = new TextField();
+        Button btnBrowsePDF = new Button("📁 Examinar");
+        btnBrowsePDF.setOnAction(e -> {
+            javafx.stage.DirectoryChooser dc = new javafx.stage.DirectoryChooser();
+            dc.setTitle("Seleccionar carpeta de PDF");
+            if (!txtRutaPDF.getText().isBlank()) {
+                File ini = new File(txtRutaPDF.getText());
+                if (ini.exists()) dc.setInitialDirectory(ini);
+            }
+            File sel = dc.showDialog(dialog.getOwner());
+            if (sel != null) txtRutaPDF.setText(sel.getAbsolutePath());
+        });
+        HBox rutaBox = new HBox(6, txtRutaPDF, btnBrowsePDF);
+        HBox.setHgrow(txtRutaPDF, Priority.ALWAYS);
+
+        Button btnGuardarForm = new Button("💾 Guardar esta configuración");
+        btnGuardarForm.setStyle("-fx-background-color: #1565C0; -fx-text-fill: white; -fx-font-weight: bold;");
+
+        VBox formulario = new VBox(8,
+            lblAreaNombre, cboArea,
+            lblPara, txtPara,
+            lblCC, txtCC,
+            lblAsunto, txtAsunto,
+            lblIntro, txtIntro,
+            lblCierre, txtCierre,
+            lblRutaPDF, rutaBox,
+            btnGuardarForm
+        );
+        formulario.setPadding(new Insets(8));
+        ScrollPane scrollForm = new ScrollPane(formulario);
+        scrollForm.setFitToWidth(true);
+
+        // ── Cargar datos en el formulario al seleccionar un item ──
+        Runnable cargarFormulario = () -> {
+            ConfiguracionCorreo sel = listaAreas.getSelectionModel().getSelectedItem();
+            if (sel == null) return;
+            cboArea.setValue(sel.getArea());
+            txtPara.setText(sel.getDestinatariosString());
+            txtCC.setText(sel.getCcString());
+            txtAsunto.setText(sel.getAsunto() != null ? sel.getAsunto() : "");
+            txtIntro.setText(sel.getCuerpoIntroduccion() != null ? sel.getCuerpoIntroduccion() : "");
+            txtCierre.setText(sel.getCuerpoFinal() != null ? sel.getCuerpoFinal() : "");
+            txtRutaPDF.setText(sel.getRutaPDF() != null ? sel.getRutaPDF() : "");
+        };
+        listaAreas.getSelectionModel().selectedItemProperty().addListener((obs, o, n) -> cargarFormulario.run());
+
+        // ── Guardar formulario en el objeto seleccionado ──
+        btnGuardarForm.setOnAction(e -> {
+            ConfiguracionCorreo sel = listaAreas.getSelectionModel().getSelectedItem();
+            if (sel == null) {
+                mostrarAlerta("Sin selección", "Selecciona un área de la lista o crea una nueva.", Alert.AlertType.WARNING);
+                return;
+            }
+            String areaVal = cboArea.getValue();
+            if (areaVal == null || areaVal.isBlank()) {
+                mostrarAlerta("Campo requerido", "El nombre del área no puede estar vacío.", Alert.AlertType.WARNING);
+                return;
+            }
+            sel.setArea(areaVal.trim());
+            sel.setDestinatariosDesdeString(txtPara.getText());
+            sel.setCcDesdeString(txtCC.getText());
+            sel.setAsunto(txtAsunto.getText().trim());
+            sel.setCuerpoIntroduccion(txtIntro.getText());
+            sel.setCuerpoFinal(txtCierre.getText());
+            sel.setRutaPDF(txtRutaPDF.getText().trim());
+
+            GestorConfiguracionCorreo.guardar(configsCorreo);
+            listaAreas.refresh();
+            agregarLog("💾 Configuración de correo guardada para área: " + areaVal.trim());
+            mostrarAlerta("Guardado", "Configuración de correo guardada correctamente.", Alert.AlertType.INFORMATION);
+        });
+
+        // ── Nueva área ──
+        btnNuevaConfig.setOnAction(e -> {
+            TextInputDialog dlg = new TextInputDialog();
+            dlg.setTitle("Nueva configuración");
+            dlg.setHeaderText("Nombre del área:");
+            dlg.setContentText("Área:");
+            dlg.showAndWait().ifPresent(nombre -> {
+                if (!nombre.isBlank()) {
+                    ConfiguracionCorreo nuevo = new ConfiguracionCorreo(nombre.trim());
+                    // Valores predeterminados del área Siniestros como ejemplo
+                    if (nombre.trim().equalsIgnoreCase("Siniestros")) {
+                        nuevo.setAsunto("[Pruebas de Disponibilidad] Validación de Operatividad Área {area} [{fecha}]");
+                        nuevo.setDestinatariosDesdeString("cindy.berroteran@bciseguros.com; sebastian.vargas@bciseguros.com");
+                        nuevo.setCcDesdeString("Soporte Nivel 1 <soporte@cliptecnologia.com>; Juan Andres Barraza Zaso <juan.barraza@bciseguros.com>; Marylennis De Los Angeles Franco Castro <marylennis.franco@bciseguros.com>");
+                        nuevo.setRutaPDF("C:\\Users\\IARC\\Desktop\\Entregas Documentos Parchado\\PDF\\Siniestros");
+                        nuevo.setCuerpoIntroduccion("Estimados,\nPor la presente, se adjunta el informe de validación de operatividad correspondiente a:");
+                        nuevo.setCuerpoFinal("Realizado tras la reciente aplicación del parche. El informe detalla los resultados de las pruebas efectuadas, validando el correcto funcionamiento del sistema.");
+                    }
+                    configsCorreo.add(nuevo);
+                    listaAreas.getItems().add(nuevo);
+                    listaAreas.getSelectionModel().select(nuevo);
+                    GestorConfiguracionCorreo.guardar(configsCorreo);
+                }
+            });
+        });
+
+        // ── Eliminar área ──
+        btnEliminarConfig.setOnAction(e -> {
+            ConfiguracionCorreo sel = listaAreas.getSelectionModel().getSelectedItem();
+            if (sel == null) return;
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                "¿Eliminar la configuración del área \"" + sel.getArea() + "\"?",
+                ButtonType.YES, ButtonType.NO);
+            confirm.showAndWait().ifPresent(bt -> {
+                if (bt == ButtonType.YES) {
+                    configsCorreo.remove(sel);
+                    listaAreas.getItems().remove(sel);
+                    GestorConfiguracionCorreo.guardar(configsCorreo);
+                }
+            });
+        });
+
+        SplitPane splitPane = new SplitPane(panelLista, scrollForm);
+        splitPane.setDividerPositions(0.24);
+        dialog.getDialogPane().setContent(splitPane);
+        dialog.showAndWait();
+    }
+
     /**
      * Inicia o detiene la automatización programada de ejecuciones
      */
@@ -3491,16 +5240,18 @@ public class ControladorPrincipal {
         Label lblInfo = new Label("La tarea se añadirá a la lista de tareas programadas y se ejecutará en la fecha/hora indicada.");
         lblInfo.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
 
-        // Opcion de modo: CSV only o ejecutar+reportes
+        // Opcion de modo: CSV only o ejecutar+reportes o ejecutar con correo
         Label lblModo = new Label("Modo de tarea:");
         RadioButton rbCsv = new RadioButton("Solo CSV de resultados (no ejecuta proyectos)");
         RadioButton rbExec = new RadioButton("Ejecutar proyectos y generar informes");
+        RadioButton rbEmail = new RadioButton("Ejecutar con informe y enviar por correo");
         ToggleGroup tgModo = new ToggleGroup();
         rbCsv.setToggleGroup(tgModo);
         rbExec.setToggleGroup(tgModo);
+        rbEmail.setToggleGroup(tgModo);
         rbExec.setSelected(true);
 
-        contenido.getChildren().addAll(lblNombre, txtNombre, lblFecha, datePicker, lblHora, horaBox, lblModo, rbCsv, rbExec, lblInfo);
+        contenido.getChildren().addAll(lblNombre, txtNombre, lblFecha, datePicker, lblHora, horaBox, lblModo, rbCsv, rbExec, rbEmail, lblInfo);
         dialog.getDialogPane().setContent(contenido);
 
         dialog.setResultConverter(btn -> {
@@ -3534,7 +5285,13 @@ public class ControladorPrincipal {
                 List<String> nombres = seleccionados.stream().map(ProyectoAutomatizacion::getNombre).collect(Collectors.toList());
                 String nombreTarea = txtNombre.getText() == null || txtNombre.getText().trim().isEmpty() ? "Tarea " + (programadorTareas.listarTareas().size()+1) : txtNombre.getText().trim();
                 TareaProgramada tarea = new TareaProgramada(nombreTarea, nombres, fechaHora);
-                tarea.setModo(rbCsv.isSelected() ? TareaProgramada.Modo.CSV_ONLY : TareaProgramada.Modo.EXEC_AND_REPORT);
+                if (rbCsv.isSelected()) {
+                    tarea.setModo(TareaProgramada.Modo.CSV_ONLY);
+                } else if (rbEmail.isSelected()) {
+                    tarea.setModo(TareaProgramada.Modo.EXEC_WITH_EMAIL);
+                } else {
+                    tarea.setModo(TareaProgramada.Modo.EXEC_AND_REPORT);
+                }
                 return tarea;
             }
             return null;
@@ -3653,106 +5410,689 @@ public class ControladorPrincipal {
      * Actualiza el chromedriver.exe en todos los proyectos que lo tengan
      */
     private void actualizarChromeDriver() {
-        // Abrir diálogo para seleccionar el nuevo chromedriver.exe
-        javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
-        fileChooser.setTitle("Seleccionar ChromeDriver.exe actualizado");
-        fileChooser.getExtensionFilters().add(
-            new javafx.stage.FileChooser.ExtensionFilter("ChromeDriver", "chromedriver.exe")
+        // Confirmar acción antes de comenzar la descarga automática
+        Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmacion.setTitle("Actualizar ChromeDriver");
+        confirmacion.setHeaderText("¿Descargar e instalar la última versión de ChromeDriver?");
+        
+        String urls = "📥 DESCARGA MANUAL:\n" +
+                      "• Chrome for Testing: https://googlechromelabs.github.io/chrome-for-testing/\n" +
+                      "• ChromeDriver (oficial): https://chromedriver.chromium.org/downloads\n" +
+                      "• Sitio alternativo: https://getwebdriver.com/chromedriver\n\n";
+        
+        confirmacion.setContentText(
+            "Este proceso:\n" +
+            "1. Detectará la versión de Chrome instalada\n" +
+            "2. Descargará la última versión compatible de ChromeDriver\n" +
+            "3. Actualizará PERMANENTEMENTE chromedriver.exe en todos los proyectos\n\n" +
+            urls +
+            "¿Desea continuar con la actualización automática?"
         );
         
-        java.io.File nuevoDriver = fileChooser.showOpenDialog(root.getScene().getWindow());
+        // Botón adicional para copiar URLs
+        ButtonType btnCopiarURL = new ButtonType("Copiar URLs", ButtonBar.ButtonData.LEFT);
+        confirmacion.getButtonTypes().add(0, btnCopiarURL);
         
-        if (nuevoDriver == null || !nuevoDriver.exists()) {
-            return; // Usuario canceló
+        java.util.Optional<ButtonType> resultado = confirmacion.showAndWait();
+        
+        if (resultado.isPresent() && resultado.get() == btnCopiarURL) {
+            // Copiar URLs al portapapeles
+            Clipboard clipboard = Clipboard.getSystemClipboard();
+            ClipboardContent content = new ClipboardContent();
+            content.putString("Chrome for Testing: https://googlechromelabs.github.io/chrome-for-testing/\n" +
+                            "ChromeDriver oficial: https://chromedriver.chromium.org/downloads\n" +
+                            "Alternativo: https://getwebdriver.com/chromedriver");
+            clipboard.setContent(content);
+            
+            Alert info = new Alert(Alert.AlertType.INFORMATION);
+            info.setTitle("URLs Copiadas");
+            info.setHeaderText("URLs copiadas al portapapeles");
+            info.setContentText("Puedes abrir tu navegador y pegar las URLs para descargar manualmente.");
+            info.showAndWait();
+            return;
         }
+        
+        if (!resultado.isPresent() || resultado.get() != ButtonType.OK) {
+            return;
+        }
+        
+        // Crear y mostrar diálogo de progreso
+        Alert progressDialog = new Alert(Alert.AlertType.INFORMATION);
+        progressDialog.setTitle("Actualizando ChromeDriver");
+        progressDialog.setHeaderText("Descargando ChromeDriver...");
+        progressDialog.setContentText("Iniciando proceso...");
+        progressDialog.getButtonTypes().clear(); // Sin botones, no puede cerrarse
+        
+        TextArea progressArea = new TextArea();
+        progressArea.setEditable(false);
+        progressArea.setWrapText(true);
+        progressArea.setMaxWidth(Double.MAX_VALUE);
+        progressArea.setMaxHeight(Double.MAX_VALUE);
+        progressArea.setPrefRowCount(15);
+        progressDialog.getDialogPane().setExpandableContent(progressArea);
+        progressDialog.getDialogPane().setExpanded(true);
+        
+        // Mostrar el diálogo sin bloquear
+        progressDialog.show();
+
+        // Hacer que la X cierre: si la ventana se cierra, interrumpir el hilo
+        final Thread[] updaterThread = {null}; // Thread local para actualización
+        Stage dialogStage = (Stage) progressDialog.getDialogPane().getScene().getWindow();
+        dialogStage.setOnCloseRequest(evt -> {
+            if (updaterThread[0] != null && updaterThread[0].isAlive()) {
+                updaterThread[0].interrupt();
+            }
+            // Permitir que la ventana se cierre normalmente
+        });
+
+        // Realizar descarga y actualización en background
+        updaterThread[0] = new Thread(() -> {
+            StringBuilder progressLog = new StringBuilder();
+
+            try {
+                // Crear instancia del actualizador con callbacks
+                com.orquestador.util.ChromeDriverUpdater updater = new com.orquestador.util.ChromeDriverUpdater();
+
+                updater.setProgressCallback(new com.orquestador.util.ChromeDriverUpdater.ProgressCallback() {
+                    @Override
+                    public void onProgress(String message) {
+                        progressLog.append(message).append("\n");
+                        Platform.runLater(() -> {
+                            progressArea.setText(progressLog.toString());
+                            progressArea.setScrollTop(Double.MAX_VALUE);
+                        });
+                    }
+
+                    @Override
+                    public void onError(String error) {
+                        progressLog.append(error).append("\n");
+                        Platform.runLater(() -> {
+                            progressArea.setText(progressLog.toString());
+                            progressArea.setScrollTop(Double.MAX_VALUE);
+                        });
+                    }
+
+                    @Override
+                    public void onComplete(File chromedriverFile) {
+                        // No hacer nada aquí, se maneja en el hilo principal
+                    }
+                });
+
+                // PASO 1: Verificar versiones actuales en proyectos
+                progressLog.append("🔍 Verificando versiones actuales de ChromeDriver en proyectos...\n");
+                Platform.runLater(() -> {
+                    progressArea.setText(progressLog.toString());
+                    progressDialog.setHeaderText("Verificando versiones...");
+                });
+                
+                String versionMasComun = null;
+                java.util.Map<String, Integer> versionesEncontradas = new java.util.HashMap<>();
+                int totalDriversRevisados = 0;
+                int driversConVersion = 0;
+                
+                for (ProyectoAutomatizacion proyecto : proyectos) {
+                    if (proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) continue;
+                    
+                    java.io.File carpetaProyecto = new java.io.File(proyecto.getRuta());
+                    java.util.List<java.io.File> driverEncontrados = buscarChromeDriver(carpetaProyecto);
+                    
+                    for (java.io.File driver : driverEncontrados) {
+                        totalDriversRevisados++;
+                        String version = com.orquestador.util.ChromeDriverUpdater.detectarVersionChromeDriver(driver);
+                        if (version != null && !version.isEmpty()) {
+                            versionesEncontradas.put(version, versionesEncontradas.getOrDefault(version, 0) + 1);
+                            driversConVersion++;
+                            
+                            // Log para debugging
+                            String msg = "   📌 " + proyecto.getNombre() + ": versión " + version + "\n";
+                            progressLog.append(msg);
+                            Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                        }
+                    }
+                }
+                
+                progressLog.append("\n📊 Estadísticas:\n");
+                progressLog.append("   Total de ChromeDrivers encontrados: " + totalDriversRevisados + "\n");
+                progressLog.append("   ChromeDrivers con versión detectada: " + driversConVersion + "\n");
+                Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                
+                // Obtener la versión más común
+                if (!versionesEncontradas.isEmpty()) {
+                    versionMasComun = versionesEncontradas.entrySet().stream()
+                        .max(java.util.Map.Entry.comparingByValue())
+                        .get().getKey();
+                    
+                    String msg = "   ✅ Versión más común instalada: " + versionMasComun + 
+                               " (" + versionesEncontradas.get(versionMasComun) + " proyecto(s))\n";
+                    progressLog.append(msg);
+                    Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                    
+                    // Mostrar todas las versiones encontradas si hay más de una
+                    if (versionesEncontradas.size() > 1) {
+                        progressLog.append("   ⚠️ NOTA: Se encontraron múltiples versiones:\n");
+                        for (java.util.Map.Entry<String, Integer> entry : versionesEncontradas.entrySet()) {
+                            progressLog.append("      - " + entry.getKey() + " (" + entry.getValue() + " proyecto(s))\n");
+                        }
+                        Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                    }
+                } else {
+                    progressLog.append("   ⚠️ No se pudo detectar versión en ningún ChromeDriver existente\n");
+                    Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                }
+                
+                // PASO 2: Obtener versión más reciente disponible
+                String versionChrome = updater.detectarVersionChrome();
+                if (versionChrome == null) {
+                    Platform.runLater(() -> {
+                        progressDialog.close();
+                        Alert error = new Alert(Alert.AlertType.ERROR);
+                        error.setTitle("Error");
+                        error.setHeaderText("No se pudo detectar Chrome");
+                        error.setContentText("No se pudo detectar la versión de Chrome instalada.");
+                        error.showAndWait();
+                    });
+                    return;
+                }
+                
+                String urlDescarga = updater.obtenerURLDescargaChromeDriver(versionChrome);
+                if (urlDescarga == null) {
+                    Platform.runLater(() -> {
+                        progressDialog.close();
+                        Alert error = new Alert(Alert.AlertType.ERROR);
+                        error.setTitle("Error");
+                        error.setHeaderText("No se pudo obtener ChromeDriver");
+                        error.setContentText("No se pudo obtener la URL de descarga.");
+                        error.showAndWait();
+                    });
+                    return;
+                }
+                
+                // PASO 3: Comparar versiones (solo versiones mayores, ignorando builds menores)
+                if (versionMasComun != null) {
+                    int comparacion = com.orquestador.util.ChromeDriverUpdater.compararVersionesMayores(versionMasComun, versionChrome);
+                    
+                    if (comparacion >= 0) {
+                        // Ya está actualizado - crear variables finales para el lambda
+                        final String versionActual = versionMasComun;
+                        final String versionDisponible = versionChrome;
+                        
+                        String msg = "\n✅ ¡Ya tienes la última versión!\n" +
+                                   "   Versión instalada: " + versionActual + "\n" +
+                                   "   Versión disponible: " + versionDisponible + "\n" +
+                                   "   (Comparando versiones mayores: " + extraerVersionMayor(versionActual) + " vs " + extraerVersionMayor(versionDisponible) + ")\n" +
+                                   "   No es necesario actualizar.\n";
+                        progressLog.append(msg);
+                        
+                        Platform.runLater(() -> {
+                            progressDialog.close();
+                            Alert info = new Alert(Alert.AlertType.INFORMATION);
+                            info.setTitle("Actualización no necesaria");
+                            info.setHeaderText("✅ ChromeDriver ya está actualizado");
+                            info.setContentText(
+                                "Versión actual: " + versionActual + "\n" +
+                                "Versión disponible: " + versionDisponible + "\n\n" +
+                                "No es necesario actualizar.\n" +
+                                "(Solo se actualizan cambios de versión mayor)"
+                            );
+                            
+                            TextArea ta = new TextArea(progressLog.toString());
+                            ta.setEditable(false);
+                            ta.setWrapText(true);
+                            info.getDialogPane().setExpandableContent(ta);
+                            info.showAndWait();
+                        });
+                        return;
+                    } else {
+                        String msg = "🔼 Actualización disponible:\n" +
+                                   "   Versión actual: " + versionMasComun + " (" + extraerVersionMayor(versionMasComun) + ")\n" +
+                                   "   Versión nueva: " + versionChrome + " (" + extraerVersionMayor(versionChrome) + ")\n\n";
+                        progressLog.append(msg);
+                        Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                    }
+                } else {
+                    // No se pudo detectar versión actual, proceder con la actualización
+                    String msg = "⚠️ No se pudo verificar versión actual, procediendo con actualización...\n\n";
+                    progressLog.append(msg);
+                    Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                }
+                
+                // PASO 4: Descargar nueva versión
+                Platform.runLater(() -> progressDialog.setHeaderText("Descargando ChromeDriver..."));
+                java.io.File nuevoDriver = updater.descargarChromeDriver(urlDescarga);
+
+                if (Thread.currentThread().isInterrupted()) {
+                    progressLog.append("\n✋ Proceso cancelado por el usuario antes de actualizar proyectos.\n");
+                    Platform.runLater(() -> {
+                        progressDialog.close();
+                        Alert cancel = new Alert(Alert.AlertType.INFORMATION);
+                        cancel.setTitle("Cancelado");
+                        cancel.setHeaderText("Actualización cancelada");
+                        cancel.setContentText("La actualización fue cancelada por el usuario.");
+                        TextArea ta = new TextArea(progressLog.toString());
+                        ta.setEditable(false);
+                        ta.setWrapText(true);
+                        cancel.getDialogPane().setExpandableContent(ta);
+                        cancel.getDialogPane().setExpanded(true);
+                        cancel.showAndWait();
+                    });
+                    return;
+                }
+
+                if (nuevoDriver == null || !nuevoDriver.exists()) {
+                    Platform.runLater(() -> {
+                        progressDialog.close();
+                        Alert error = new Alert(Alert.AlertType.ERROR);
+                        error.setTitle("Error");
+                        error.setHeaderText("No se pudo descargar ChromeDriver");
+                        error.setContentText("Revisa el log para más detalles.");
+
+                        TextArea errorArea = new TextArea(progressLog.toString());
+                        errorArea.setEditable(false);
+                        errorArea.setWrapText(true);
+                        error.getDialogPane().setExpandableContent(errorArea);
+                        error.getDialogPane().setExpanded(true);
+                        error.showAndWait();
+                    });
+                    return;
+                }
+
+                // Actualizar en todos los proyectos
+                progressLog.append("\n🔄 Actualizando proyectos...\n");
+                progressLog.append("⭐ Los archivos se copiarán de forma PERMANENTE en el disco\n");
+                progressLog.append("⭐ Los cambios persisten después de cerrar el programa\n\n");
+                Platform.runLater(() -> {
+                    progressArea.setText(progressLog.toString());
+                    progressDialog.setHeaderText("Actualizando proyectos...");
+                });
+
+                int actualizados = 0;
+                int errores = 0;
+                StringBuilder detalles = new StringBuilder();
+
+                for (ProyectoAutomatizacion proyecto : proyectos) {
+                    if (Thread.currentThread().isInterrupted()) break;
+
+                    if (proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
+                        continue;
+                    }
+
+                    try {
+                        java.io.File carpetaProyecto = new java.io.File(proyecto.getRuta());
+                        java.util.List<java.io.File> driverEncontrados = buscarChromeDriver(carpetaProyecto);
+
+                        if (driverEncontrados.isEmpty()) {
+                            String msg = "⚠️ " + proyecto.getNombre() + ": No se encontró chromedriver.exe\n";
+                            detalles.append(msg);
+                            progressLog.append(msg);
+                            Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                            continue;
+                        }
+
+                        for (java.io.File driverAntiguo : driverEncontrados) {
+                            if (Thread.currentThread().isInterrupted()) break;
+                            
+                            boolean copiado = false;
+                            String errorDetallado = "";
+                            
+                            // Intentar copiar con hasta 3 reintentos
+                            for (int intento = 1; intento <= 3 && !copiado; intento++) {
+                                try {
+                                    // Si no es el primer intento, intentar cerrar procesos chromedriver
+                                    if (intento > 1) {
+                                        String msg = "   🔄 Intento " + intento + "/3 para " + proyecto.getNombre() + "...\n";
+                                        progressLog.append(msg);
+                                        Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                                        
+                                        // Intentar matar procesos chromedriver.exe
+                                        try {
+                                            cerrarProcesosChromeDriver();
+                                            Thread.sleep(1000); // Esperar 1 segundo
+                                        } catch (Exception ignored) {}
+                                    }
+                                    
+                                    java.nio.file.Files.copy(
+                                        nuevoDriver.toPath(),
+                                        driverAntiguo.toPath(),
+                                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                                    );
+                                    String msg = "✅ " + proyecto.getNombre() + 
+                                               " [PERMANENTE]: " + driverAntiguo.getAbsolutePath().replace(proyecto.getRuta(), "...") + "\n";
+                                    detalles.append(msg);
+                                    progressLog.append(msg);
+                                    Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                                    actualizados++;
+                                    copiado = true;
+                                    
+                                } catch (java.nio.file.FileSystemException e) {
+                                    // Error de sistema de archivos (archivo bloqueado, permisos, etc.)
+                                    String msgError = e.getMessage();
+                                    if (msgError != null && msgError.contains("being used by another process")) {
+                                        errorDetallado = "Archivo bloqueado (en uso por otro proceso)";
+                                    } else if (msgError != null && msgError.contains("Access is denied")) {
+                                        errorDetallado = "Acceso denegado (permisos insuficientes)";
+                                    } else {
+                                        errorDetallado = "Error de sistema: " + (msgError != null ? msgError : e.getClass().getSimpleName());
+                                    }
+                                    
+                                    if (intento == 3) {
+                                        // Último intento fallido
+                                        String msg = "❌ " + proyecto.getNombre() + 
+                                                   ": " + errorDetallado + "\n" +
+                                                   "   Ruta: " + driverAntiguo.getAbsolutePath() + "\n" +
+                                                   "   Solución: Cierra todas las automatizaciones en ejecución e intenta nuevamente\n";
+                                        detalles.append(msg);
+                                        progressLog.append(msg);
+                                        Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                                        errores++;
+                                    }
+                                    
+                                } catch (Exception e) {
+                                    // Otros errores
+                                    errorDetallado = e.getClass().getSimpleName() + ": " + 
+                                                   (e.getMessage() != null ? e.getMessage() : "Error desconocido");
+                                    
+                                    if (intento == 3) {
+                                        String msg = "❌ " + proyecto.getNombre() + 
+                                                   ": " + errorDetallado + "\n" +
+                                                   "   Ruta: " + driverAntiguo.getAbsolutePath() + "\n";
+                                        detalles.append(msg);
+                                        progressLog.append(msg);
+                                        Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                                        errores++;
+                                    }
+                                }
+                            }
+                        }
+
+                    } catch (Exception e) {
+                        String msg = "❌ " + proyecto.getNombre() + 
+                                   ": Error - " + e.getMessage() + "\n";
+                        detalles.append(msg);
+                        progressLog.append(msg);
+                        Platform.runLater(() -> progressArea.setText(progressLog.toString()));
+                        errores++;
+                    }
+                }
+
+                // Si fue interrumpido, informar
+                if (Thread.currentThread().isInterrupted()) {
+                    progressLog.append("\n✋ Proceso cancelado por el usuario.\n");
+                }
+
+                // Mostrar resultado final
+                final int totalActualizados = actualizados;
+                final int totalErrores = errores;
+                final String mensajeDetalles = detalles.toString();
+
+                Platform.runLater(() -> {
+                    progressDialog.close();
+
+                    Alert alertResultado = new Alert(
+                        totalErrores == 0 ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING
+                    );
+                    alertResultado.setTitle("Actualización completada");
+                    alertResultado.setHeaderText("ChromeDriver actualizado PERMANENTEMENTE");
+
+                    String resumen = "✅ Proyectos actualizados: " + totalActualizados + "\n";
+                    if (totalErrores > 0) {
+                        resumen += "❌ Errores: " + totalErrores + "\n";
+                    }
+                    resumen += "\n⭐ LOS ARCHIVOS SE COPIARON DE FORMA PERMANENTE\n";
+                    resumen += "Los cambios persisten después de cerrar el programa.\n\n";
+                    resumen += "📥 Descarga manual si es necesario:\n";
+                    resumen += "• https://googlechromelabs.github.io/chrome-for-testing/\n";
+                    resumen += "• https://chromedriver.chromium.org/downloads\n\n";
+                    resumen += "Detalles:";
+
+                    alertResultado.setContentText(resumen);
+
+                    TextArea textArea = new TextArea(mensajeDetalles);
+                    textArea.setEditable(false);
+                    textArea.setWrapText(true);
+                    textArea.setMaxWidth(Double.MAX_VALUE);
+                    textArea.setMaxHeight(Double.MAX_VALUE);
+
+                    alertResultado.getDialogPane().setExpandableContent(textArea);
+                    alertResultado.getDialogPane().setExpanded(true);
+                    alertResultado.showAndWait();
+                });
+
+            } catch (Exception e) {
+                Platform.runLater(() -> {
+                    progressDialog.close();
+                    Alert error = new Alert(Alert.AlertType.ERROR);
+                    error.setTitle("Error");
+                    error.setHeaderText("Error durante la actualización");
+                    error.setContentText("Error: " + e.getMessage());
+
+                    TextArea errorArea = new TextArea(progressLog.toString() + "\n\nException: " + e.toString());
+                    errorArea.setEditable(false);
+                    errorArea.setWrapText(true);
+                    error.getDialogPane().setExpandableContent(errorArea);
+                    error.getDialogPane().setExpanded(true);
+                    error.showAndWait();
+                });
+                e.printStackTrace();
+            }
+
+        }, "ChromeDriverUpdater-Thread");
+        
+        // Iniciar thread (esta funcionalidad fue deshabilitada pero el código permanece por compatibilidad)
+        updaterThread[0].start();
+    }
+    
+    
+    /**
+     * Procesa la actualización de ChromeDriver a partir de un archivo
+     */
+    private void procesarActualizacionChromeDriver(File archivoSeleccionado) {
+        if (archivoSeleccionado == null || !archivoSeleccionado.exists()) {
+            return;
+        }
+        
+        // Confirmar que es chromedriver.exe
+        if (!archivoSeleccionado.getName().equalsIgnoreCase("chromedriver.exe")) {
+            Alert error = new Alert(Alert.AlertType.ERROR);
+            error.setTitle("Archivo incorrecto");
+            error.setHeaderText("El archivo debe ser chromedriver.exe");
+            error.setContentText("Seleccionaste: " + archivoSeleccionado.getName());
+            error.showAndWait();
+            return;
+        }
+        
+        // Detectar versión del driver seleccionado
+        String versionDriver = com.orquestador.util.ChromeDriverUpdater.detectarVersionChromeDriver(archivoSeleccionado);
+        String infoVersion = versionDriver != null && !versionDriver.isEmpty() 
+            ? "Versión detectada: " + versionDriver 
+            : "No se pudo detectar la versión";
         
         // Confirmar acción
         Alert confirmacion = new Alert(Alert.AlertType.CONFIRMATION);
-        confirmacion.setTitle("Confirmar actualización");
-        confirmacion.setHeaderText("¿Actualizar ChromeDriver en todos los proyectos?");
-        confirmacion.setContentText("Se buscará y reemplazará chromedriver.exe en todos los proyectos registrados.");
+        confirmacion.setTitle("Confirmar instalación");
+        confirmacion.setHeaderText("¿Copiar este ChromeDriver a todos los proyectos?");
+        confirmacion.setContentText(
+            "Archivo: " + archivoSeleccionado.getName() + "\n" +
+            infoVersion + "\n\n" +
+            "⭐ Se copiará PERMANENTEMENTE a todos los proyectos que tengan chromedriver.exe\n" +
+            "Los archivos existentes serán reemplazados.\n\n" +
+            "¿Continuar?"
+        );
         
         if (confirmacion.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) {
             return;
         }
         
-        // Realizar actualización en background
-        new Thread(() -> {
-            int actualizados = 0;
-            int errores = 0;
-            StringBuilder detalles = new StringBuilder();
-            
-            for (ProyectoAutomatizacion proyecto : proyectos) {
-                if (proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
-                    continue; // Proyecto manual sin ruta
-                }
-                
-                try {
-                    // Buscar chromedriver.exe recursivamente en la carpeta del proyecto
-                    java.io.File carpetaProyecto = new java.io.File(proyecto.getRuta());
-                    java.util.List<java.io.File> driverEncontrados = buscarChromeDriver(carpetaProyecto);
-                    
-                    if (driverEncontrados.isEmpty()) {
-                        detalles.append("⚠️ ").append(proyecto.getNombre()).append(": No se encontró chromedriver.exe\n");
-                        continue;
-                    }
-                    
-                    // Reemplazar cada chromedriver.exe encontrado
-                    for (java.io.File driverAntiguo : driverEncontrados) {
-                        try {
-                            java.nio.file.Files.copy(
-                                nuevoDriver.toPath(),
-                                driverAntiguo.toPath(),
-                                java.nio.file.StandardCopyOption.REPLACE_EXISTING
-                            );
-                            detalles.append("✅ ").append(proyecto.getNombre())
-                                   .append(": ").append(driverAntiguo.getAbsolutePath().replace(proyecto.getRuta(), "..."))
-                                   .append("\n");
-                            actualizados++;
-                        } catch (Exception e) {
-                            detalles.append("❌ ").append(proyecto.getNombre())
-                                   .append(": Error - ").append(e.getMessage()).append("\n");
-                            errores++;
-                        }
-                    }
-                    
-                } catch (Exception e) {
-                    detalles.append("❌ ").append(proyecto.getNombre())
-                           .append(": Error - ").append(e.getMessage()).append("\n");
-                    errores++;
-                }
+        // Copiar a todos los proyectos
+        StringBuilder log = new StringBuilder();
+        log.append("📂 Actualizando chromedriver.exe en proyectos...\n");
+        if (versionDriver != null && !versionDriver.isEmpty()) {
+            log.append("📌 Versión: ").append(versionDriver).append("\n\n");
+        }
+        
+        int actualizados = 0;
+        int errores = 0;
+        int proyectosSinDriver = 0;
+        
+        for (ProyectoAutomatizacion proyecto : proyectos) {
+            if (proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
+                continue;
             }
             
-            // Mostrar resultado en el hilo de JavaFX
-            final int totalActualizados = actualizados;
-            final int totalErrores = errores;
-            final String mensajeDetalles = detalles.toString();
-            
-            Platform.runLater(() -> {
-                Alert resultado = new Alert(Alert.AlertType.INFORMATION);
-                resultado.setTitle("Actualización completada");
-                resultado.setHeaderText("ChromeDriver actualizado");
+            try {
+                java.io.File carpetaProyecto = new java.io.File(proyecto.getRuta());
+                java.util.List<java.io.File> driverEncontrados = buscarChromeDriver(carpetaProyecto);
                 
-                String resumen = "✅ Actualizados: " + totalActualizados + "\n";
-                if (totalErrores > 0) {
-                    resumen += "❌ Errores: " + totalErrores + "\n";
+                if (driverEncontrados.isEmpty()) {
+                    proyectosSinDriver++;
+                    continue;
                 }
                 
-                resultado.setContentText(resumen + "\nDetalles:");
+                for (java.io.File driverDestino : driverEncontrados) {
+                    try {
+                        // Intentar cerrar procesos antes de copiar
+                        cerrarProcesosChromeDriver();
+                        Thread.sleep(300);
+                        
+                        java.nio.file.Files.copy(
+                            archivoSeleccionado.toPath(),
+                            driverDestino.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        );
+                        
+                        log.append("✅ ").append(proyecto.getNombre()).append("\n");
+                        actualizados++;
+                        
+                    } catch (Exception e) {
+                        log.append("❌ ").append(proyecto.getNombre())
+                           .append(": ").append(e.getMessage()).append("\n");
+                        errores++;
+                    }
+                }
                 
-                // Agregar detalles en TextArea expandible
-                TextArea textArea = new TextArea(mensajeDetalles);
-                textArea.setEditable(false);
-                textArea.setWrapText(true);
-                textArea.setMaxWidth(Double.MAX_VALUE);
-                textArea.setMaxHeight(Double.MAX_VALUE);
-                
-                resultado.getDialogPane().setExpandableContent(textArea);
-                resultado.getDialogPane().setExpanded(true);
-                resultado.showAndWait();
-            });
+            } catch (Exception e) {
+                log.append("❌ ").append(proyecto.getNombre())
+                   .append(": ").append(e.getMessage()).append("\n");
+                errores++;
+            }
+        }
+        
+        // Mostrar resultado
+        Alert resultado = new Alert(
+            errores == 0 ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING
+        );
+        resultado.setTitle("Actualización de ChromeDriver");
+        resultado.setHeaderText(
+            actualizados > 0 
+                ? String.format("✅ %d proyecto%s actualizado%s correctamente", actualizados, actualizados == 1 ? "" : "s", actualizados == 1 ? "" : "s")
+                : "⚠️ No se pudo actualizar ningún proyecto"
+        );
+        
+        String resumen = "";
+        if (actualizados > 0) {
+            resumen += String.format("✅ ChromeDriver actualizado en %d proyecto%s\n", actualizados, actualizados == 1 ? "" : "s");
+        }
+        if (errores > 0) {
+            resumen += String.format("❌ %d error%s durante la actualización\n", errores, errores == 1 ? "" : "es");
+        }
+        if (proyectosSinDriver > 0) {
+            resumen += String.format("ℹ️ %d proyecto%s sin chromedriver.exe (omitido%s)\n", 
+                proyectosSinDriver, 
+                proyectosSinDriver == 1 ? "" : "s",
+                proyectosSinDriver == 1 ? "" : "s");
+        }
+        if (versionDriver != null && !versionDriver.isEmpty()) {
+            resumen += "\n📌 Versión instalada: " + versionDriver + "\n";
+        }
+        resumen += "\n⭐ Los archivos se copiaron PERMANENTEMENTE\n";
+        resumen += "Los cambios persisten después de cerrar el programa.\n\n";
+        resumen += "Ver detalles abajo ↓";
+        
+        resultado.setContentText(resumen);
+        
+        TextArea textArea = new TextArea(log.toString());
+        textArea.setEditable(false);
+        textArea.setWrapText(true);
+        textArea.setMaxWidth(Double.MAX_VALUE);
+        textArea.setMaxHeight(Double.MAX_VALUE);
+        textArea.setPrefRowCount(20);
+        
+        resultado.getDialogPane().setExpandableContent(textArea);
+        resultado.getDialogPane().setExpanded(true);
+        resultado.showAndWait();
+        
+        agregarLog(String.format("✓ ChromeDriver actualizado en %d proyecto%s", actualizados, actualizados == 1 ? "" : "s"));
+    }
+    
+    /**
+     * Permite cargar manualmente un chromedriver.exe y copiarlo a todos los proyectos
+     */
+    private void cargarChromeDriverManual() {
+        // Mostrar información sobre dónde descargar
+        Alert info = new Alert(Alert.AlertType.INFORMATION);
+        info.setTitle("Actualizar ChromeDriver");
+        info.setHeaderText("Descarga ChromeDriver desde estas páginas oficiales:");
+        info.setContentText(
+            "📥 PÁGINAS DE DESCARGA:\n\n" +
+            "1. Chrome for Testing (RECOMENDADO):\n" +
+            "   https://googlechromelabs.github.io/chrome-for-testing/\n\n" +
+            "2. ChromeDriver Oficial:\n" +
+            "   https://chromedriver.chromium.org/downloads\n\n" +
+            "3. Sitio alternativo:\n" +
+            "   https://getwebdriver.com/chromedriver\n\n" +
+            "⚠️ IMPORTANTE: Descarga la versión que coincida con tu Chrome.\n" +
+            "Para ver tu versión: chrome://version en Chrome.\n\n" +
+            "Haz clic en OK para seleccionar el archivo chromedriver.exe\n" +
+            "O arrastra y suelta el archivo sobre el botón de ChromeDriver."
+        );
+        
+        ButtonType btnCopiarURLs = new ButtonType("Copiar URLs", ButtonBar.ButtonData.LEFT);
+        info.getButtonTypes().add(0, btnCopiarURLs);
+        
+        java.util.Optional<ButtonType> result = info.showAndWait();
+        
+        if (result.isPresent() && result.get() == btnCopiarURLs) {
+            Clipboard clipboard = Clipboard.getSystemClipboard();
+            ClipboardContent content = new ClipboardContent();
+            content.putString(
+                "Chrome for Testing: https://googlechromelabs.github.io/chrome-for-testing/\n" +
+                "ChromeDriver Oficial: https://chromedriver.chromium.org/downloads\n" +
+                "Alternativo: https://getwebdriver.com/chromedriver"
+            );
+            clipboard.setContent(content);
             
-        }).start();
+            Alert copied = new Alert(Alert.AlertType.INFORMATION);
+            copied.setTitle("URLs Copiadas");
+            copied.setHeaderText("URLs copiadas al portapapeles");
+            copied.setContentText("Abre tu navegador y pega las URLs para descargar.\nDespués vuelve aquí para cargar el archivo.");
+            copied.showAndWait();
+            return;
+        }
+        
+        if (!result.isPresent() || result.get() != ButtonType.OK) {
+            return;
+        }
+        
+        // Abrir selector de archivos
+        javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
+        fileChooser.setTitle("Seleccionar chromedriver.exe");
+        fileChooser.getExtensionFilters().add(
+            new javafx.stage.FileChooser.ExtensionFilter("ChromeDriver", "chromedriver.exe")
+        );
+        
+        // Intentar abrir en la carpeta de descargas por defecto
+        String userHome = System.getProperty("user.home");
+        File descargas = new File(userHome, "Downloads");
+        if (!descargas.exists()) {
+            descargas = new File(userHome, "Descargas");
+        }
+        if (descargas.exists()) {
+            fileChooser.setInitialDirectory(descargas);
+        }
+        
+        File archivoSeleccionado = fileChooser.showOpenDialog(root.getScene().getWindow());
+        
+        // Procesar el archivo seleccionado
+        procesarActualizacionChromeDriver(archivoSeleccionado);
     }
     
     /**
@@ -3780,6 +6120,46 @@ public class ControladorPrincipal {
         }
         
         return resultados;
+    }
+
+    /**
+     * Intenta cerrar todos los procesos chromedriver.exe en ejecución (Windows 11)
+     */
+    private void cerrarProcesosChromeDriver() {
+        try {
+            // En Windows 11, usar taskkill para cerrar todos los procesos chromedriver.exe
+            // /F = forzar terminación, /IM = nombre de imagen (proceso)
+            ProcessBuilder pb = new ProcessBuilder("taskkill", "/F", "/IM", "chromedriver.exe");
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            
+            // Leer la salida (opcional, para debugging)
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    // Silenciosamente leer la salida
+                    // System.out.println("[taskkill] " + line);
+                }
+            }
+            
+            process.waitFor();
+        } catch (Exception e) {
+            // Ignorar errores (puede que no haya procesos corriendo)
+            // System.err.println("No se pudieron cerrar procesos chromedriver: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Extrae solo la versión mayor (X.Y.Z) de una versión completa (X.Y.Z.W)
+     */
+    private String extraerVersionMayor(String version) {
+        if (version == null || version.isEmpty()) return "";
+        String[] parts = version.split("\\.");
+        if (parts.length >= 3) {
+            return parts[0] + "." + parts[1] + "." + parts[2];
+        }
+        return version;
     }
 
     public Parent getRoot() {
@@ -3828,11 +6208,8 @@ public class ControladorPrincipal {
             try (FileInputStream fis = new FileInputStream(f)) {
                 props.load(fis);
             }
-            String v = props.getProperty("vistaCompacta");
-            if (v != null && v.equalsIgnoreCase("true")) {
-                // Aplicar sin sobrescribir el fichero (guardar=false)
-                aplicarEstadoVistaCompacta(true, false);
-            }
+            
+            // PRIMERO: Cargar proyectos deshabilitados
             String disabled = props.getProperty("proyectosDeshabilitados");
             if (disabled != null && !disabled.trim().isEmpty()) {
                 String[] parts = disabled.split(";;");
@@ -3840,6 +6217,46 @@ public class ControladorPrincipal {
                     String t = s.trim();
                     if (!t.isEmpty()) proyectosDeshabilitados.add(t);
                 }
+            }
+            
+            // SEGUNDO: Cargar proyectos seleccionados ANTES de activar vista compacta
+            String seleccionados = props.getProperty("proyectosSeleccionados");
+            if (seleccionados != null && !seleccionados.trim().isEmpty()) {
+                String[] parts = seleccionados.split(";;");
+                Set<String> nombresSeleccionados = new java.util.HashSet<>();
+                for (String s : parts) {
+                    String t = s.trim();
+                    if (!t.isEmpty()) nombresSeleccionados.add(t);
+                }
+                // Aplicar la selección a los proyectos cargados
+                for (ProyectoAutomatizacion proyecto : proyectos) {
+                    proyecto.setSeleccionado(nombresSeleccionados.contains(proyecto.getNombre()));
+                }
+            }
+            
+            // TERCERO: Cargar estado de vista compacta DESPUÉS de tener los proyectos seleccionados
+            String v = props.getProperty("vistaCompacta");
+            if (v != null && v.equalsIgnoreCase("true")) {
+                // Aplicar sin sobrescribir el fichero (guardar=false)
+                aplicarEstadoVistaCompacta(true, false);
+            }
+            
+            // CUARTO: Refrescar la tabla para mostrar los cambios
+            String empresasGuardadas = props.getProperty("empresasRegistradas");
+            if (empresasGuardadas != null && !empresasGuardadas.trim().isEmpty()) {
+                for (String empresa : empresasGuardadas.split(";;")) {
+                    String limpia = empresa.trim();
+                    if (!limpia.isEmpty()) empresasRegistradas.add(limpia);
+                }
+            }
+            empresasRegistradas.addAll(obtenerEmpresasDesdeProyectos());
+            String empresaSeleccionada = props.getProperty("empresaSeleccionada", EMPRESA_DEFAULT);
+            refrescarEmpresasDisponibles(empresaSeleccionada);
+            aplicarFiltro();
+
+            // QUINTO: Refrescar la tabla para mostrar los cambios
+            if (tablaProyectos != null) {
+                tablaProyectos.refresh();
             }
         } catch (Exception e) {
             // No interrumpir la aplicación por un error en preferencias
@@ -3850,9 +6267,20 @@ public class ControladorPrincipal {
     private void guardarPreferencias() {
         try {
             Properties props = new Properties();
+            // Guardar estado de vista compacta
             props.setProperty("vistaCompacta", Boolean.toString(vistaCompacta));
+            // Guardar proyectos deshabilitados
             String joined = String.join(";;", proyectosDeshabilitados);
             props.setProperty("proyectosDeshabilitados", joined);
+            // Guardar proyectos seleccionados
+            String seleccionados = proyectos.stream()
+                .filter(ProyectoAutomatizacion::isSeleccionado)
+                .map(ProyectoAutomatizacion::getNombre)
+                .collect(Collectors.joining(";;"));
+            props.setProperty("proyectosSeleccionados", seleccionados);
+            props.setProperty("empresasRegistradas", String.join(";;", empresasRegistradas));
+            props.setProperty("empresaSeleccionada", cboFiltroEmpresa != null && cboFiltroEmpresa.getValue() != null
+                ? cboFiltroEmpresa.getValue() : EMPRESA_DEFAULT);
             File f = new File(PREF_FILE);
             try (FileOutputStream fos = new FileOutputStream(f)) {
                 props.store(fos, "Orquestador preferencias");

@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 public class TareaProgramada {
-    public static enum Modo { CSV_ONLY, EXEC_AND_REPORT }
+    public static enum Modo { CSV_ONLY, EXEC_AND_REPORT, EXEC_WITH_EMAIL }
 
     private String id;
     private String nombre;

@@ -15,20 +15,35 @@ public class CSVGeneradorResultados {
         }
 
         try (PrintWriter pw = new PrintWriter(new FileWriter(destino))) {
-            // Cabecera
-            pw.println("Nombre,Estado,DuracionMs,DocumentoWord,DocumentoPdf,MensajeError,RutaLog");
+            // Cabecera: Nombre, Área, Retry, Estado, Última Ejecución, Duración
+            pw.println("Nombre,Área,Retry,Estado,Última Ejecución,Duración");
 
-            DateTimeFormatter df = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+            DateTimeFormatter df = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
 
             for (ProyectoAutomatizacion p : proyectos) {
                 String nombre = escape(p.getNombre());
+                String area = escape(p.getArea() != null ? p.getArea() : "");
+                String retry = escape(p.getFormatoRetry() != null ? p.getFormatoRetry() : "-");
                 String estado = p.getEstado() != null ? escape(p.getEstado().toString()) : "";
-                String duracion = p.getDuracionSegundos() != null ? String.valueOf(p.getDuracionSegundos()) : "";
-                String reporteGenerado = String.valueOf(p.isReporteGenerado());
-                String mensaje = p.getMensajeError() != null ? escape(p.getMensajeError()) : "";
-                String log = p.getRutaLogEjecucion() != null ? escape(p.getRutaLogEjecucion()) : "";
+                String ultimaEjecucion = "";
+                if (p.getUltimaEjecucion() != null) {
+                    ultimaEjecucion = p.getUltimaEjecucion().format(df);
+                }
+                
+                // Convertir duración a formato legible
+                int totalSegundos = p.getDuracionSegundos() != null ? p.getDuracionSegundos() : 0;
+                int minutos = totalSegundos / 60;
+                int segundos = totalSegundos % 60;
+                String duracionFormato;
+                if (minutos > 0 && segundos > 0) {
+                    duracionFormato = minutos + " min " + segundos + " seg";
+                } else if (minutos > 0) {
+                    duracionFormato = minutos + " min";
+                } else {
+                    duracionFormato = segundos + " seg";
+                }
 
-                pw.printf("%s,%s,%s,%s,%s,%s\n", nombre, estado, duracion, reporteGenerado, mensaje, log);
+                pw.printf("%s,%s,%s,%s,%s,%s\n", nombre, area, retry, estado, ultimaEjecucion, duracionFormato);
             }
 
             pw.flush();

@@ -107,7 +107,9 @@
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.5.0</version>
                 <executions>
+                    <!-- JAR principal del Orquestador -->
                     <execution>
+                        <id>orquestador-main</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
@@ -123,7 +125,62 @@
                             </transformers>
                         </configuration>
                     </execution>
+                    <!-- JAR App Maestra (gestión de licencias) -->
+                    <execution>
+                        <id>app-maestra</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>maestro</shadedClassifierName>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.orquestador.maestro.AppMaestra</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
                 </executions>
+            </plugin>
+            <!-- ProGuard: ofusca el codigo de com.orquestador.* -->
+            <plugin>
+                <groupId>com.github.wvengen</groupId>
+                <artifactId>proguard-maven-plugin</artifactId>
+                <version>2.6.0</version>
+                <executions>
+                    <execution>
+                        <phase>verify</phase>
+                        <goals><goal>proguard</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <proguardVersion>7.3.2</proguardVersion>
+                    <injar>orquestador-automatizaciones-1.0-SNAPSHOT-all.jar</injar>
+                    <outjar>orquestador-automatizaciones-1.0-SNAPSHOT-all.jar</outjar>
+                    <obfuscate>true</obfuscate>
+                    <proguardInclude>${project.basedir}/proguard.conf</proguardInclude>
+                    <libs>
+                        <lib>${java.home}/jmods</lib>
+                    </libs>
+                    <options>
+                        <option>-ignorewarnings</option>
+                    </options>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.guardsquare</groupId>
+                        <artifactId>proguard-base</artifactId>
+                        <version>7.3.2</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.guardsquare</groupId>
+                        <artifactId>proguard-core</artifactId>
+                        <version>9.0.10</version>
+                    </dependency>
+                </dependencies>
             </plugin>
         </plugins>
     </build>

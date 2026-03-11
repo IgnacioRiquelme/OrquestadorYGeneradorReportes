@@ -105,6 +105,9 @@ public class GestorCredenciales {
             if (jsonObject.has("pasword2")) {
                 cred.setPasword2(jsonObject.get("pasword2").getAsString());
             }
+            if (jsonObject.has("rut")) {
+                cred.setRut(jsonObject.get("rut").getAsString());
+            }
             if (jsonObject.has("datos2") && jsonObject.get("datos2").isJsonObject()) {
                 JsonObject datos2 = jsonObject.getAsJsonObject("datos2");
                 if (datos2.has("user2")) {
@@ -112,6 +115,9 @@ public class GestorCredenciales {
                 }
                 if (datos2.has("pasword2")) {
                     cred.setPasword2(datos2.get("pasword2").getAsString());
+                }
+                if (datos2.has("rut")) {
+                    cred.setRut(datos2.get("rut").getAsString());
                 }
             }
             
@@ -156,17 +162,29 @@ public class GestorCredenciales {
         // Para proyectos tipo BCI o Zenit preferimos siempre usar el objeto "datos1" (crear si es necesario),
         // así replicamos la lógica del proyecto 15 para el proyecto 16.
         String nombreProyecto = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
-        boolean usarDatos1 = nombreProyecto.contains("bci") || nombreProyecto.contains("zenit");
+        boolean esCorredores = nombreProyecto.contains("corredores");
+        boolean usarDatos1 = nombreProyecto.contains("bci") || nombreProyecto.contains("zenit") || esCorredores;
 
         if (usarDatos1) {
             // Solo actualizar campos existentes dentro de datos1. No crear campos nuevos.
             if (jsonObject.has("datos1") && jsonObject.get("datos1").isJsonObject()) {
                 JsonObject datos1 = jsonObject.getAsJsonObject("datos1");
-                if (cred.getUser() != null && datos1.has("user")) {
-                    datos1.addProperty("user", cred.getUser());
-                }
-                if (cred.getPasword() != null && datos1.has("pasword")) {
-                    datos1.addProperty("pasword", cred.getPasword());
+                if (esCorredores) {
+                    // Para corredores: datos1.user = RUT, datos1.pasword = contraseña
+                    if (cred.getUser() != null && datos1.has("user")) {
+                        datos1.addProperty("user", cred.getUser());
+                    }
+                    if (cred.getPasword() != null && datos1.has("pasword")) {
+                        datos1.addProperty("pasword", cred.getPasword());
+                    }
+                } else {
+                    // Para BCI/Zenit
+                    if (cred.getUser() != null && datos1.has("user")) {
+                        datos1.addProperty("user", cred.getUser());
+                    }
+                    if (cred.getPasword() != null && datos1.has("pasword")) {
+                        datos1.addProperty("pasword", cred.getPasword());
+                    }
                 }
                 // dejar intactos otros campos dentro de datos1
             } else {
@@ -184,12 +202,16 @@ public class GestorCredenciales {
 
         // Cuentas alternativas: para proyectos 'corredores' actualizamos dentro de datos2 si existe
         String nombreProyectoLower = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
-        boolean esCorredores = nombreProyectoLower.contains("corredores");
         if (esCorredores) {
             if (jsonObject.has("datos2") && jsonObject.get("datos2").isJsonObject()) {
                 JsonObject datos2 = jsonObject.getAsJsonObject("datos2");
+                // Para corredores: datos2.user2 = Usuario, datos2.pasword2 = contraseña
                 if (cred.getUser2() != null && datos2.has("user2")) datos2.addProperty("user2", cred.getUser2());
                 if (cred.getPasword2() != null && datos2.has("pasword2")) datos2.addProperty("pasword2", cred.getPasword2());
+            } else {
+                // Si no existe datos2, actualizar en la raíz
+                if (cred.getUser2() != null && jsonObject.has("user2")) jsonObject.addProperty("user2", cred.getUser2());
+                if (cred.getPasword2() != null && jsonObject.has("pasword2")) jsonObject.addProperty("pasword2", cred.getPasword2());
             }
         } else {
             // Mantener comportamiento anterior para otros proyectos: actualizar en la raíz solo si las propiedades ya existen

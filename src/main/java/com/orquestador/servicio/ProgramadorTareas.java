@@ -38,9 +38,11 @@ public class ProgramadorTareas {
     }).setPrettyPrinting().create();
 
     private java.util.function.Consumer<com.orquestador.modelo.TareaProgramada> ejecucionHandler; // recibe la tarea completa
+    private final LocalDateTime startupTime;
 
     public ProgramadorTareas() {
         cargar();
+        startupTime = LocalDateTime.now();
         iniciarChequeoPeriódico();
     }
 
@@ -101,7 +103,9 @@ public class ProgramadorTareas {
                 synchronized (this) {
                     LocalDateTime ahora = LocalDateTime.now();
                     for (TareaProgramada tarea : tareas) {
-                        if (!tarea.isEjecutada() && !tarea.getFechaHora().isAfter(ahora)) {
+                        if (!tarea.isEjecutada()
+                                && !tarea.getFechaHora().isAfter(ahora)
+                                && !tarea.getFechaHora().isBefore(startupTime)) {
                             aEjecutar.add(tarea);
                         }
                     }
