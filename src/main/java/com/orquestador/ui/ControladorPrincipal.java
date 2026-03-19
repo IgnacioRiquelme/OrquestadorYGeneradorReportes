@@ -3818,7 +3818,7 @@ public class ControladorPrincipal {
     }
     
     private void generarInformes() {
-        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+        List<ProyectoAutomatizacion> seleccionados = proyectosFiltrados.stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
             .collect(Collectors.toList());
         
@@ -4097,9 +4097,9 @@ public class ControladorPrincipal {
                     cell.setCellStyle(headerStyle);
                 }
                 
-                // Agregar datos de todos los proyectos
+                // Agregar datos filtrados por empresa activa
                 int rowNum = 1;
-                for (ProyectoAutomatizacion proyecto : proyectos) {
+                for (ProyectoAutomatizacion proyecto : proyectosFiltrados) {
                     org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowNum++);
                     
                     // Nombre
@@ -4237,7 +4237,7 @@ public class ControladorPrincipal {
                     alert.setContentText(
                         "Archivo: " + archivoDestino.getName() + "\n" +
                         "Ubicación: " + archivoDestino.getParent() + "\n" +
-                        "Proyectos incluidos: " + proyectos.size() + "\n\n" +
+                        "Proyectos incluidos: " + proyectosFiltrados.size() + "\n\n" +
                         "¿Desea abrir el archivo?"
                     );
                     
