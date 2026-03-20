@@ -25,41 +25,16 @@ public class GeneradorDocumentos {
     
     private final Proyecto proyecto;
     private StringBuilder resumenGeneracion;
-    private final List<String> advertencias = new ArrayList<>();
+    private List<String> advertencias;
     
     public GeneradorDocumentos(Proyecto proyecto) {
         this.proyecto = proyecto;
         this.resumenGeneracion = new StringBuilder();
+        this.advertencias = new ArrayList<>();
     }
 
     public List<String> getAdvertencias() {
         return advertencias;
-    }
-
-    private void registrarAdvertenciaImagenes(String etiquetaInforme, int insertadas, int esperadas) {
-        if (esperadas > 0 && insertadas < esperadas) {
-            String etiqueta = (etiquetaInforme == null || etiquetaInforme.isEmpty()) ? "principal" : etiquetaInforme;
-            advertencias.add("Informe " + etiqueta + ": imagenes insertadas " + insertadas + "/" + esperadas);
-        }
-    }
-
-    private void guardarAdvertenciasArchivo(String rutaSalidaWord, String timestamp) {
-        if (advertencias.isEmpty()) return;
-        try {
-            String nombreBase = proyecto.getNombre().replaceAll("[^a-zA-Z0-9._-]", "_");
-            String nombreArchivo = nombreBase + "_warnings_" + timestamp + ".txt";
-            File salida = new File(rutaSalidaWord, nombreArchivo);
-            StringBuilder contenido = new StringBuilder();
-            contenido.append("WARNINGS - IMAGENES FALTANTES\n");
-            contenido.append("Proyecto: ").append(proyecto.getNombre()).append("\n");
-            contenido.append("Fecha: ").append(java.time.LocalDateTime.now()).append("\n\n");
-            for (String adv : advertencias) {
-                contenido.append("- ").append(adv).append("\n");
-            }
-            java.nio.file.Files.write(salida.toPath(), contenido.toString().getBytes("UTF-8"));
-        } catch (Exception e) {
-            // No interrumpir la generación por fallas de escritura de warnings
-        }
     }
     
     /**
@@ -84,9 +59,6 @@ public class GeneradorDocumentos {
                 proyecto.setMensajeError("No se encontraron imágenes válidas para generar el documento");
                 return false;
             }
-
-            int esperadas = proyecto.getImagenesSeleccionadas() != null ? proyecto.getImagenesSeleccionadas().size() : 0;
-            registrarAdvertenciaImagenes("principal", imagenesValidas.size(), esperadas);
             
             // 2. Crear ruta de salida con nombre único
             String timestamp = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + "_" + 
@@ -147,7 +119,6 @@ public class GeneradorDocumentos {
             System.out.println("======================\n");
             
             generarResumen(imagenesValidas.size(), tiempoTotal);
-            guardarAdvertenciasArchivo(proyecto.getRutaSalidaWord(), timestamp);
             
             return true;
             
@@ -193,12 +164,19 @@ public class GeneradorDocumentos {
             // Normalizar patrones antiguos: si tienen números largos, eliminarlos
             List<String> patronesNormalizados = new ArrayList<>();
             for (String patron : proyecto.getImagenesSeleccionadas()) {
-                // Crear un nombre de archivo ficticio para poder usar extraerPatron
-                String nombreFicticio = patron + "20250101_000000.png";
-                String patronNormalizado = GestorImagenes.extraerPatron(nombreFicticio);
+                // 1) Si el patron es un nombre de archivo completo (nuevo o antiguo formato), extraer prefijo directamente
+                String patronNormalizado = GestorImagenes.extraerPatron(patron);
                 if (patronNormalizado != null) {
                     patronesNormalizados.add(patronNormalizado);
-                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' normalizado a: '" + patronNormalizado + "'");
+                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' extraído directamente a: '" + patronNormalizado + "'");
+                    continue;
+                }
+                // 2) Si ya es un prefijo (ej: 'Nombre_'), usar el truco del nombre ficticio
+                String nombreFicticio = patron + "20250101_000000.png";
+                patronNormalizado = GestorImagenes.extraerPatron(nombreFicticio);
+                if (patronNormalizado != null) {
+                    patronesNormalizados.add(patronNormalizado);
+                    System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' normalizado (ficticio) a: '" + patronNormalizado + "'");
                 } else {
                     patronesNormalizados.add(patron);
                     System.out.println("[DEBUG VALIDACION] Patron '" + patron + "' sin cambios (no se pudo normalizar)");
@@ -238,8 +216,9 @@ public class GeneradorDocumentos {
             }
         }
         
-        // Si hay alertas, agregarlas al proyecto
+        // Si hay alertas, agregarlas al proyecto y al campo de advertencias
         if (!alertas.isEmpty()) {
+            this.advertencias.addAll(alertas);
             String mensajeAlertas = String.join("\n", alertas);
             proyecto.setMensajeError(mensajeAlertas);
         }
@@ -750,12 +729,6 @@ public class GeneradorDocumentos {
         if (proyecto.getDocumentoPdfGenerado() != null) {
             resumenGeneracion.append("📑 PDF: ").append(proyecto.getDocumentoPdfGenerado()).append("\n");
         }
-        if (!advertencias.isEmpty()) {
-            resumenGeneracion.append("⚠ Warnings:\n");
-            for (String adv : advertencias) {
-                resumenGeneracion.append("  - ").append(adv).append("\n");
-            }
-        }
         resumenGeneracion.append("⏱️  Tiempo: ").append(tiempoMs / 1000.0).append(" segundos\n");
         resumenGeneracion.append("========================================\n");
     }
@@ -773,8 +746,6 @@ public class GeneradorDocumentos {
      */
     private boolean generarMultiplesInformes() {
         long inicio = System.currentTimeMillis();
-        String timestampMulti = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + "_" + 
-                             java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HHmmss"));
         int informesGenerados = 0;
         List<String> documentosWordGenerados = new ArrayList<>();
         List<String> documentosPdfGenerados = new ArrayList<>();
@@ -800,9 +771,6 @@ public class GeneradorDocumentos {
                         rutasImagenes.add(img.getAbsolutePath());
                     }
                     informePrincipal.setImagenesSeleccionadas(rutasImagenes);
-
-                    int esperadasPrincipal = proyecto.getImagenesSeleccionadas() != null ? proyecto.getImagenesSeleccionadas().size() : 0;
-                    registrarAdvertenciaImagenes("principal", imagenesInformePrincipal.size(), esperadasPrincipal);
                     
                     // Generar informe principal (número 1)
                     boolean exitosoPrincipal = generarInformeIndividual(informePrincipal, imagenesInformePrincipal, 1, documentosWordGenerados, documentosPdfGenerados);
@@ -856,14 +824,6 @@ public class GeneradorDocumentos {
                     System.out.println("Carpeta buscada: " + proyecto.getRutaImagenes());
                     continue;
                 }
-
-                if (informe.getImagenesSeleccionadas() != null && !informe.getImagenesSeleccionadas().isEmpty()) {
-                    String etiqueta = informe.getNombreArchivo();
-                    if (etiqueta == null || etiqueta.trim().isEmpty()) {
-                        etiqueta = new File(informe.getTemplateWord()).getName();
-                    }
-                    registrarAdvertenciaImagenes(etiqueta, imagenesInforme.size(), informe.getImagenesSeleccionadas().size());
-                }
                 
                 // Generar el informe individual
                 System.out.println("Llamando a generarInformeIndividual con " + imagenesInforme.size() + " imágenes...");
@@ -889,9 +849,6 @@ public class GeneradorDocumentos {
                 
                 long tiempoTotal = System.currentTimeMillis() - inicio;
                 proyecto.setTiempoGeneracion(tiempoTotal);
-
-                generarResumen(informesGenerados, tiempoTotal);
-                guardarAdvertenciasArchivo(proyecto.getRutaSalidaWord(), timestampMulti);
                 
                 return true;
             } else {

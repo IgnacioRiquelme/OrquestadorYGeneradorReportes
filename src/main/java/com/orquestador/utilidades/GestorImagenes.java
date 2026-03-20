@@ -53,29 +53,32 @@ public class GestorImagenes {
      * Ejemplo: "t0000_9_Numero_Atencion_18231996_Auditoria_20251119_102030.png" → "t0000_9_Numero_Atencion_"
      */
     public static String extraerPatron(String nombreArchivo) {
-        // Patrón: cualquier cosa antes de _YYYYMMDD_HHMMSS.(png|jpg|jpeg)
-        Pattern pattern = Pattern.compile("^(.+?)_(\\d{8}_\\d{6})\\.(png|jpg|jpeg)$", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = pattern.matcher(nombreArchivo);
-        
-        if (matcher.matches()) {
-            String patronCompleto = matcher.group(1) + "_";
-            
-            // Eliminar cualquier número largo (6+ dígitos) que NO sea timestamp
-            // seguido de texto adicional antes del timestamp real
-            // Ejemplo: "t0000_9_Numero_Atencion_18231996_Auditoria_" → "t0000_9_Numero_Atencion_"
-            // Buscamos: _[números de 6+ dígitos]_ seguido de más texto
-            Pattern numeroLargo = Pattern.compile("_(\\d{6,})_.*$");
-            Matcher matcherNumero = numeroLargo.matcher(patronCompleto);
-            
-            if (matcherNumero.find()) {
-                // Encontramos un número largo, cortamos justo antes de él
-                int indiceCorte = matcherNumero.start();
-                patronCompleto = patronCompleto.substring(0, indiceCorte + 1); // +1 para incluir el guión bajo
+        Pattern numeroLargo = Pattern.compile("_(\\d{6,})_.*$");
+
+        // Formato nuevo: prefix_YYYYMMDD_HHMMSSmmm_N.(png|jpg|jpeg)  (milisegundos + secuencia)
+        Pattern patternNuevo = Pattern.compile("^(.+?)_(\\d{8}_\\d{7,9}_\\d+)\\.(png|jpg|jpeg)$", Pattern.CASE_INSENSITIVE);
+        Matcher matcherNuevo = patternNuevo.matcher(nombreArchivo);
+        if (matcherNuevo.matches()) {
+            String patronCompleto = matcherNuevo.group(1) + "_";
+            Matcher mn = numeroLargo.matcher(patronCompleto);
+            if (mn.find()) {
+                patronCompleto = patronCompleto.substring(0, mn.start() + 1);
             }
-            
             return patronCompleto;
         }
-        
+
+        // Formato antiguo: prefix_YYYYMMDD_HHMMSS.(png|jpg|jpeg)
+        Pattern patternAntiguo = Pattern.compile("^(.+?)_(\\d{8}_\\d{6})\\.(png|jpg|jpeg)$", Pattern.CASE_INSENSITIVE);
+        Matcher matcherAntiguo = patternAntiguo.matcher(nombreArchivo);
+        if (matcherAntiguo.matches()) {
+            String patronCompleto = matcherAntiguo.group(1) + "_";
+            Matcher mn = numeroLargo.matcher(patronCompleto);
+            if (mn.find()) {
+                patronCompleto = patronCompleto.substring(0, mn.start() + 1);
+            }
+            return patronCompleto;
+        }
+
         return null;
     }
     
@@ -84,13 +87,18 @@ public class GestorImagenes {
      * Ejemplo: "t0001_1_Login_20251111_235030.png" → "20251111_235030"
      */
     public static String extraerTimestamp(String nombreArchivo) {
-        Pattern pattern = Pattern.compile("_(\\d{8}_\\d{6})\\.png$");
-        Matcher matcher = pattern.matcher(nombreArchivo);
-        
-        if (matcher.find()) {
-            return matcher.group(1);
+        // Formato nuevo: _YYYYMMDD_HHMMSSmmm_N.(png|jpg|jpeg)
+        Pattern patternNuevo = Pattern.compile("_(\\d{8}_\\d{7,9})(?:_\\d+)?\\.(png|jpg|jpeg)$", Pattern.CASE_INSENSITIVE);
+        Matcher matcherNuevo = patternNuevo.matcher(nombreArchivo);
+        if (matcherNuevo.find()) {
+            return matcherNuevo.group(1);
         }
-        
+        // Formato antiguo: _YYYYMMDD_HHMMSS.(png|jpg|jpeg)
+        Pattern patternAntiguo = Pattern.compile("_(\\d{8}_\\d{6})\\.(png|jpg|jpeg)$", Pattern.CASE_INSENSITIVE);
+        Matcher matcherAntiguo = patternAntiguo.matcher(nombreArchivo);
+        if (matcherAntiguo.find()) {
+            return matcherAntiguo.group(1);
+        }
         return null;
     }
     
