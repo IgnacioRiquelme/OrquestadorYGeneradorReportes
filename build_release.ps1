@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 $ROOT         = $PSScriptRoot
 $TARGET       = "$ROOT\target"
-$DIST         = "$ROOT\dist"
+$DIST         = "C:\orq_dist"
 $JAR          = "orquestador-automatizaciones-1.0-SNAPSHOT-all.jar"
 $ICON         = "$ROOT\assets\bci_seguros.ico"
 $ISCC         = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
