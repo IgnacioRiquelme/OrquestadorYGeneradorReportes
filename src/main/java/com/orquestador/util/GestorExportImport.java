@@ -219,6 +219,9 @@ public class GestorExportImport {
                 }
             }
 
+            // Normalizar separadores duplicados en rutas (defecto histórico del instalador)
+            GestorConfiguracion.normalizarRutas(p);
+
             // Asegurar estado limpio en el equipo nuevo
             p.setEstado(ProyectoAutomatizacion.EstadoEjecucion.PENDIENTE);
             p.setUltimaEjecucion(null);

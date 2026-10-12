@@ -5,7 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Modelo que representa un Proyecto de generaciÃ³n de documentos
+ * Modelo que representa un Proyecto de generación de documentos
  */
 public class Proyecto implements Serializable {
     private static final long serialVersionUID = 1L;

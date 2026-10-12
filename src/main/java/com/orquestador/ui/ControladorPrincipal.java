@@ -11,6 +11,8 @@ import com.orquestador.modelo.TareaProgramada;
 import com.orquestador.util.GestorConfiguracion;
 import com.orquestador.util.GestorConfiguracionCorreo;
 import com.orquestador.util.GestorExportImport;
+import com.orquestador.util.GestorVistas;
+import com.orquestador.modelo.VistaGuardada;
 import com.orquestador.modelo.ConfiguracionCorreo;
 import com.orquestador.servicio.EnviadorCorreoOutlook;
 import javafx.application.Platform;
@@ -87,6 +89,10 @@ public class ControladorPrincipal {
     private Button btnVistaCompacta;
     private long tiempoInicioEjecucion = 0;
     private long tiempoTotalAcumulado = 0;
+
+    // Variables para sistema de vistas guardadas
+    private Button btnGuardarVista;
+    private Menu menuVistasGuardadas;
 
     // Descripciones para ayuda rápida (hover prolongado)
     private java.util.Map<Button, String> descripcionBotones = new java.util.HashMap<>();
@@ -363,6 +369,12 @@ public class ControladorPrincipal {
         btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
         btnVistaCompacta.setOnAction(e -> alternarVistaCompacta());
 
+        // Controles para sistema de vistas guardadas
+        btnGuardarVista = new Button("💾 Guardar Vista");
+        btnGuardarVista.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold;");
+        btnGuardarVista.setOnAction(e -> guardarVistaActual());
+        btnGuardarVista.setTooltip(new Tooltip("Guarda la selección actual como una vista nueva"));
+
         btnLicencia = new Button("🔐 Licencia");
         // Si es equipo maestro, mostrar panel de gestión completo; si no, diálogo de cliente
         if (LicenciaDialog.esMaestro()) {
@@ -443,9 +455,11 @@ public class ControladorPrincipal {
 
         botonesAccion.getChildren().addAll(btnAgregar, btnEliminar, new Separator(javafx.geometry.Orientation.VERTICAL),
                new Label("Empresa:"), cboFiltroEmpresa, btnAgregarEmpresa, btnQuitarEmpresa,
-               new Label("Area:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnVistaCompacta, new Separator(javafx.geometry.Orientation.VERTICAL), chkRetry);
+               new Label("Área:"), cboFiltroArea, new Label("VPN:"), cboFiltroVPN, btnRefrescar, btnVistaCompacta, 
+               new Separator(javafx.geometry.Orientation.VERTICAL),
+               btnGuardarVista, new Separator(javafx.geometry.Orientation.VERTICAL), chkRetry);
         
-        // Botones de ejecucin
+        // Botones de ejecución
         HBox botonesEjecucion = new HBox(10);
         botonesEjecucion.setAlignment(Pos.CENTER_LEFT);
         
@@ -550,7 +564,11 @@ public class ControladorPrincipal {
             itemConfigCorreo, itemLicencia, sep3,
             itemChromeDriver);
 
-        menuBar.getMenus().addAll(menuArchivo, menuHerramientas);
+        // ── Menú Vistas Guardadas ───────────────────────────────────────────
+        menuVistasGuardadas = new Menu("📋 Vistas Guardadas");
+        actualizarMenuVistasGuardadas();
+
+        menuBar.getMenus().addAll(menuArchivo, menuHerramientas, menuVistasGuardadas);
         return menuBar;
     }
 
@@ -813,7 +831,7 @@ public class ControladorPrincipal {
         VBox container = new VBox(5);
         container.setPadding(new Insets(5));
         
-        Label lblTabla = new Label(" Proyectos de Automatizacion");
+        Label lblTabla = new Label(" Proyectos de Automatización");
         lblTabla.setFont(Font.font("System", FontWeight.BOLD, 14));
         
         tablaProyectos = new TableView<>();
@@ -863,6 +881,9 @@ public class ControladorPrincipal {
                 if (p != null && isProyectoDeshabilitado(p.getNombre())) {
                     setText(item + "  (DESHABILITADO)");
                     setStyle("-fx-text-fill: #888; -fx-font-style: italic;");
+                } else if (p != null && p.isRequiereAyuda()) {
+                    setText(item);
+                    setStyle("-fx-font-weight: bold; -fx-text-fill: #2196F3;");
                 } else {
                     setText(item);
                     setStyle("");
@@ -1007,7 +1028,7 @@ public class ControladorPrincipal {
         colEstado.setMinWidth(120);
         
         // Columna Ultima Ejecucion
-        TableColumn<ProyectoAutomatizacion, String> colUltima = new TableColumn<>("Ultima Ejecucion");
+        TableColumn<ProyectoAutomatizacion, String> colUltima = new TableColumn<>("Última Ejecución");
         colUltima.setCellValueFactory(cellData -> {
             if (cellData.getValue().getUltimaEjecucion() != null) {
                 String fecha = cellData.getValue().getUltimaEjecucion().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
@@ -1018,7 +1039,7 @@ public class ControladorPrincipal {
         colUltima.setMinWidth(150);
         
         // Columna Duracion
-        TableColumn<ProyectoAutomatizacion, String> colDuracion = new TableColumn<>("Duracion");
+        TableColumn<ProyectoAutomatizacion, String> colDuracion = new TableColumn<>("Duración");
         colDuracion.setCellValueFactory(cellData -> {
             if (cellData.getValue().getDuracionSegundos() != null) {
                 return new javafx.beans.property.SimpleStringProperty(cellData.getValue().getDuracionSegundos() + "s");
@@ -1174,7 +1195,7 @@ public class ControladorPrincipal {
         VBox container = new VBox(5);
         container.setPadding(new Insets(5));
         
-        Label lblLog = new Label(" Log de Ejecucion");
+        Label lblLog = new Label(" Log de Ejecución");
         lblLog.setFont(Font.font("System", FontWeight.BOLD, 14));
         
         logArea = new TextArea();
@@ -1207,41 +1228,34 @@ public class ControladorPrincipal {
         Dialog<ProyectoAutomatizacion> dialog = new Dialog<>();
         dialog.setTitle("Agregar Proyecto");
         dialog.setHeaderText("Nuevo Proyecto de Automatización");
-        
+
         ButtonType btnAceptar = new ButtonType("Agregar", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(btnAceptar, ButtonType.CANCEL);
-        
+
         // Contenedor principal con scroll
         VBox contenido = new VBox(10);
         contenido.setPadding(new Insets(15));
         contenido.setMinWidth(800);
         contenido.setPrefWidth(850);
-        
+
         TextField txtNombre = new TextField();
         txtNombre.setPromptText("Nombre del proyecto");
-        
+
         TextField txtRuta = new TextField();
         txtRuta.setPromptText("C:\\ruta\\al\\proyecto");
-        
+
         Button btnExplorarRuta = new Button("Examinar...");
         btnExplorarRuta.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta del proyecto");
             // Si el campo ya contiene una ruta válida, abrir ahí
-            try {
-                if (txtRuta.getText() != null && !txtRuta.getText().trim().isEmpty()) {
-                    java.io.File init = new java.io.File(txtRuta.getText());
-                    if (init.exists() && init.isDirectory()) {
-                        chooser.setInitialDirectory(init);
-                    }
-                }
-            } catch (Exception ignored) {}
+            abrirChooserEnRuta(chooser, txtRuta.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRuta.setText(folder.getAbsolutePath());
             }
         });
-        
+
         ComboBox<String> cboArea = new ComboBox<>();
         cboArea.getItems().addAll("Clientes", "Comercial", "Integraciones", "Siniestros");
         cboArea.setValue("Clientes");
@@ -1253,15 +1267,18 @@ public class ControladorPrincipal {
             ? cboFiltroEmpresa.getValue()
             : EMPRESA_DEFAULT;
         cboEmpresa.setValue(empresaActual);
-        
+
         ComboBox<TipoVPN> cboVPN = new ComboBox<>();
         cboVPN.getItems().addAll(TipoVPN.values());
         cboVPN.setValue(TipoVPN.SIN_VPN);
-        
+
         ComboBox<TipoEjecucion> cboTipo = new ComboBox<>();
         cboTipo.getItems().addAll(TipoEjecucion.values());
         cboTipo.setValue(TipoEjecucion.MAVEN);
-        
+
+        CheckBox chkRequiereAyuda = new CheckBox("Requiere ayuda (Cloudflare)");
+        chkRequiereAyuda.setStyle("-fx-font-weight: bold; -fx-text-fill: #FF5722;");
+
         // Separador
         javafx.scene.control.Separator sep1 = new javafx.scene.control.Separator();
         Label lblGeneracion = new Label("📄 Configuración para Generación de Informes");
@@ -1275,14 +1292,7 @@ public class ControladorPrincipal {
         btnExplorarImagenes.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de imágenes");
-            try {
-                if (txtRutaImagenes.getText() != null && !txtRutaImagenes.getText().trim().isEmpty()) {
-                    java.io.File init = new java.io.File(txtRutaImagenes.getText());
-                    if (init.exists() && init.isDirectory()) {
-                        chooser.setInitialDirectory(init);
-                    }
-                }
-            } catch (Exception ignored) {}
+            abrirChooserEnRuta(chooser, txtRutaImagenes.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRutaImagenes.setText(folder.getAbsolutePath());
@@ -1297,16 +1307,16 @@ public class ControladorPrincipal {
             javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
             chooser.setTitle("Seleccionar template Word");
             chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
-            // Abrir inicialmente en la carpeta central de templates si existe
-            try {
+            // Abrir en la carpeta del template del campo; si no existe, usar la carpeta central
+            java.io.File initTemplate = directorioExistenteMasCercano(txtTemplate.getText());
+            if (initTemplate != null) {
+                chooser.setInitialDirectory(initTemplate);
+            } else {
                 java.io.File defaultTemplates = new java.io.File("C:\\Users\\IARC\\Desktop\\Nuevos esqueletos");
                 if (defaultTemplates.exists() && defaultTemplates.isDirectory()) {
                     chooser.setInitialDirectory(defaultTemplates);
-                } else if (txtTemplate.getText() != null && !txtTemplate.getText().trim().isEmpty()) {
-                    java.io.File init = new java.io.File(txtTemplate.getText()).getParentFile();
-                    if (init != null && init.exists()) chooser.setInitialDirectory(init);
                 }
-            } catch (Exception ignored) {}
+            }
             java.io.File file = chooser.showOpenDialog(dialog.getOwner());
             if (file != null) {
                 txtTemplate.setText(file.getAbsolutePath());
@@ -1320,6 +1330,7 @@ public class ControladorPrincipal {
         btnExplorarSalidaWord.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de salida Word");
+            abrirChooserEnRuta(chooser, txtSalidaWord.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtSalidaWord.setText(folder.getAbsolutePath());
@@ -1333,6 +1344,7 @@ public class ControladorPrincipal {
         btnExplorarSalidaPdf.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de salida PDF");
+            abrirChooserEnRuta(chooser, txtSalidaPdf.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtSalidaPdf.setText(folder.getAbsolutePath());
@@ -1372,6 +1384,7 @@ public class ControladorPrincipal {
                 // Permitir elegir carpeta si no hay ruta definida
                 javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
                 chooser.setTitle("Seleccionar carpeta de imágenes");
+                abrirChooserEnRuta(chooser, txtRuta.getText());
                 java.io.File folder = chooser.showDialog(dialog.getOwner());
                 if (folder != null) {
                     txtRutaImagenes.setText(folder.getAbsolutePath());
@@ -1431,42 +1444,42 @@ public class ControladorPrincipal {
 
         contenido.getChildren().add(new Label("Empresa:"));
         contenido.getChildren().add(cboEmpresa);
-        
+
         contenido.getChildren().add(new Label("VPN:"));
         contenido.getChildren().add(cboVPN);
-        
+
         contenido.getChildren().add(new Label("Tipo de ejecución:"));
         contenido.getChildren().add(cboTipo);
-        
+
+        contenido.getChildren().add(chkRequiereAyuda);
+
         contenido.getChildren().addAll(sep1, lblGeneracion);
-        
+
         HBox hboxImagenes = new HBox(10);
         hboxImagenes.getChildren().addAll(txtRutaImagenes, btnExplorarImagenes);
         HBox.setHgrow(txtRutaImagenes, Priority.ALWAYS);
         contenido.getChildren().add(new Label("Ruta de imágenes:"));
         contenido.getChildren().add(hboxImagenes);
-        
-        HBox hboxTemplate = new HBox(10);
-        hboxTemplate.getChildren().addAll(txtTemplate, btnExplorarTemplate);
-        HBox.setHgrow(txtTemplate, Priority.ALWAYS);
-        contenido.getChildren().add(new Label("Template Word:"));
-        contenido.getChildren().add(hboxTemplate);
-        
+
+        // Template Word individual eliminado: ahora se usa un template Word GLOBAL/UNIVERSAL
+        // para todos los proyectos (ver GeneradorDocumentos). txtTemplate se mantiene sin UI
+        // por compatibilidad interna, pero ya no se muestra ni se solicita al usuario.
+
         HBox hboxSalidaWord = new HBox(10);
         hboxSalidaWord.getChildren().addAll(txtSalidaWord, btnExplorarSalidaWord);
         HBox.setHgrow(txtSalidaWord, Priority.ALWAYS);
         contenido.getChildren().add(new Label("Carpeta Word:"));
         contenido.getChildren().add(hboxSalidaWord);
-        
+
         HBox hboxSalidaPdf = new HBox(10);
         hboxSalidaPdf.getChildren().addAll(txtSalidaPdf, btnExplorarSalidaPdf);
         HBox.setHgrow(txtSalidaPdf, Priority.ALWAYS);
         contenido.getChildren().add(new Label("Carpeta PDF:"));
         contenido.getChildren().add(hboxSalidaPdf);
-        
+
         contenido.getChildren().add(chkSeleccionar);
         contenido.getChildren().add(btnSelectorVisual);
-        
+
         // ===== SECCIÓN DE MÚLTIPLES INFORMES =====
         javafx.scene.control.Separator sep2 = new javafx.scene.control.Separator();
         Label lblInformes = new Label("📑 Configuración de Informes Múltiples (Opcional)");
@@ -1508,6 +1521,7 @@ public class ControladorPrincipal {
                 javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
                 chooser.setTitle("Seleccionar template Word");
                 chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+                abrirChooserEnRuta(chooser, txtTemplateInforme.getText());
                 java.io.File file = chooser.showOpenDialog(dialog.getOwner());
                 if (file != null) {
                     txtTemplateInforme.setText(file.getAbsolutePath());
@@ -1544,8 +1558,6 @@ public class ControladorPrincipal {
                 lblNumInforme,
                 new Label("Nombre del Archivo:"),
                 txtNombreArchivo,
-                new Label("Template Word:"),
-                hboxTemplateInforme,
                 new Label("Imágenes:"),
                 lblResumenImagenes,
                 btnSeleccionarImagenes,
@@ -1606,6 +1618,7 @@ public class ControladorPrincipal {
                 proyecto.setRutaTemplateWord(txtTemplate.getText());
                 proyecto.setRutaSalidaWord(txtSalidaWord.getText());
                 proyecto.setRutaSalidaPdf(txtSalidaPdf.getText());
+                proyecto.setRequiereAyuda(chkRequiereAyuda.isSelected());
 
                 // Si usó selector manual, guardar esas imágenes
                 if (chkSeleccionar.isSelected() && !imagenesSeleccionadasManualmente.isEmpty()) {
@@ -1715,12 +1728,7 @@ public class ControladorPrincipal {
         btnExplorarRuta.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta del proyecto");
-            try {
-                if (txtRuta.getText() != null && !txtRuta.getText().trim().isEmpty()) {
-                    java.io.File init = new java.io.File(txtRuta.getText());
-                    if (init.exists() && init.isDirectory()) chooser.setInitialDirectory(init);
-                }
-            } catch (Exception ignored) {}
+            abrirChooserEnRuta(chooser, txtRuta.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRuta.setText(folder.getAbsolutePath());
@@ -1744,7 +1752,11 @@ public class ControladorPrincipal {
         ComboBox<TipoEjecucion> cboTipo = new ComboBox<>();
         cboTipo.getItems().addAll(TipoEjecucion.values());
         cboTipo.setValue(seleccionado.getTipoEjecucion());
-        
+
+        CheckBox chkRequiereAyuda = new CheckBox("Requiere ayuda (Cloudflare)");
+        chkRequiereAyuda.setStyle("-fx-font-weight: bold; -fx-text-fill: #FF5722;");
+        chkRequiereAyuda.setSelected(seleccionado.isRequiereAyuda());
+
         // Separador
         javafx.scene.control.Separator sep1 = new javafx.scene.control.Separator();
         Label lblGeneracion = new Label("📄 Configuración para Generación de Informes");
@@ -1758,6 +1770,7 @@ public class ControladorPrincipal {
         btnExplorarImagenes.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de imágenes");
+            abrirChooserEnRuta(chooser, txtRutaImagenes.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtRutaImagenes.setText(folder.getAbsolutePath());
@@ -1772,16 +1785,16 @@ public class ControladorPrincipal {
             javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
             chooser.setTitle("Seleccionar template Word");
             chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
-            // Abrir inicialmente en la carpeta central de templates si existe
-            try {
+            // Abrir en la carpeta del template del campo; si no existe, usar la carpeta central
+            java.io.File initTemplate = directorioExistenteMasCercano(txtTemplate.getText());
+            if (initTemplate != null) {
+                chooser.setInitialDirectory(initTemplate);
+            } else {
                 java.io.File defaultTemplates = new java.io.File("C:\\Users\\IARC\\Desktop\\Nuevos esqueletos");
                 if (defaultTemplates.exists() && defaultTemplates.isDirectory()) {
                     chooser.setInitialDirectory(defaultTemplates);
-                } else if (txtTemplate.getText() != null && !txtTemplate.getText().trim().isEmpty()) {
-                    java.io.File init = new java.io.File(txtTemplate.getText()).getParentFile();
-                    if (init != null && init.exists()) chooser.setInitialDirectory(init);
                 }
-            } catch (Exception ignored) {}
+            }
             java.io.File file = chooser.showOpenDialog(dialog.getOwner());
             if (file != null) {
                 txtTemplate.setText(file.getAbsolutePath());
@@ -1795,6 +1808,7 @@ public class ControladorPrincipal {
         btnExplorarSalidaWord.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de salida Word");
+            abrirChooserEnRuta(chooser, txtSalidaWord.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtSalidaWord.setText(folder.getAbsolutePath());
@@ -1808,6 +1822,7 @@ public class ControladorPrincipal {
         btnExplorarSalidaPdf.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de salida PDF");
+            abrirChooserEnRuta(chooser, txtSalidaPdf.getText());
             java.io.File folder = chooser.showDialog(dialog.getOwner());
             if (folder != null) {
                 txtSalidaPdf.setText(folder.getAbsolutePath());
@@ -1871,6 +1886,7 @@ public class ControladorPrincipal {
                 // Permitir elegir carpeta si no hay ruta definida
                 javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
                 chooser.setTitle("Seleccionar carpeta de imágenes");
+                abrirChooserEnRuta(chooser, txtRuta.getText());
                 java.io.File folder = chooser.showDialog(dialog.getOwner());
                 if (folder != null) {
                     txtRutaImagenes.setText(folder.getAbsolutePath());
@@ -1950,27 +1966,27 @@ public class ControladorPrincipal {
 
         contenido.getChildren().add(new Label("Empresa:"));
         contenido.getChildren().add(cboEmpresa);
-        
+
         contenido.getChildren().add(new Label("VPN:"));
         contenido.getChildren().add(cboVPN);
-        
+
         contenido.getChildren().add(new Label("Tipo de ejecución:"));
         contenido.getChildren().add(cboTipo);
-        
+
+        contenido.getChildren().add(chkRequiereAyuda);
+
         contenido.getChildren().addAll(sep1, lblGeneracion);
-        
+
         HBox hboxImagenes = new HBox(10);
         hboxImagenes.getChildren().addAll(txtRutaImagenes, btnExplorarImagenes);
         HBox.setHgrow(txtRutaImagenes, Priority.ALWAYS);
         contenido.getChildren().add(new Label("Ruta de imágenes:"));
         contenido.getChildren().add(hboxImagenes);
-        
-        HBox hboxTemplate = new HBox(10);
-        hboxTemplate.getChildren().addAll(txtTemplate, btnExplorarTemplate);
-        HBox.setHgrow(txtTemplate, Priority.ALWAYS);
-        contenido.getChildren().add(new Label("Template Word:"));
-        contenido.getChildren().add(hboxTemplate);
-        
+
+        // Template Word individual eliminado: ahora se usa un template Word GLOBAL/UNIVERSAL
+        // para todos los proyectos (ver GeneradorDocumentos). txtTemplate se mantiene sin UI
+        // por compatibilidad interna, pero ya no se muestra ni se solicita al usuario.
+
         HBox hboxSalidaWord = new HBox(10);
         hboxSalidaWord.getChildren().addAll(txtSalidaWord, btnExplorarSalidaWord);
         HBox.setHgrow(txtSalidaWord, Priority.ALWAYS);
@@ -2037,6 +2053,7 @@ public class ControladorPrincipal {
                 javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
                 chooser.setTitle("Seleccionar template Word");
                 chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+                abrirChooserEnRuta(chooser, txtTemplateInforme.getText());
                 java.io.File file = chooser.showOpenDialog(dialog.getOwner());
                 if (file != null) {
                     txtTemplateInforme.setText(file.getAbsolutePath());
@@ -2073,8 +2090,6 @@ public class ControladorPrincipal {
                 lblNumInforme,
                 new Label("Nombre del archivo:"),
                 txtNombreArchivoEdit,
-                new Label("Template Word:"),
-                hboxTemplateInforme,
                 new Label("Imágenes:"),
                 lblResumenImagenes,
                 btnSeleccionarImagenes,
@@ -2108,6 +2123,7 @@ public class ControladorPrincipal {
                 javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
                 chooser.setTitle("Seleccionar template Word");
                 chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("Word", "*.docx"));
+                abrirChooserEnRuta(chooser, txtTemplateInforme.getText());
                 java.io.File file = chooser.showOpenDialog(dialog.getOwner());
                 if (file != null) {
                     txtTemplateInforme.setText(file.getAbsolutePath());
@@ -2216,6 +2232,7 @@ public class ControladorPrincipal {
                 seleccionado.setRutaTemplateWord(txtTemplate.getText());
                 seleccionado.setRutaSalidaWord(txtSalidaWord.getText());
                 seleccionado.setRutaSalidaPdf(txtSalidaPdf.getText());
+                seleccionado.setRequiereAyuda(chkRequiereAyuda.isSelected());
 
                 // Si usó selector manual, validar que la tabla no esté vacía y convertir los nombres seleccionados a patrones y guardar
                 if (chkSeleccionar.isSelected()) {
@@ -2275,6 +2292,37 @@ public class ControladorPrincipal {
         });
     }
     
+    /**
+     * Devuelve el directorio existente más cercano para una ruta escrita en un campo.
+     * Si la ruta es un archivo, usa su carpeta padre; si no existe, sube por los
+     * ancestros hasta encontrar uno que exista. Devuelve null si no hay ninguno.
+     */
+    private java.io.File directorioExistenteMasCercano(String rutaTexto) {
+        if (rutaTexto == null || rutaTexto.trim().isEmpty()) return null;
+        try {
+            java.io.File f = new java.io.File(rutaTexto.trim());
+            if (f.exists() && f.isFile()) f = f.getParentFile();
+            while (f != null && !(f.exists() && f.isDirectory())) {
+                f = f.getParentFile();
+            }
+            return f;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Abre el DirectoryChooser en la ruta del campo (o su ancestro existente más cercano). */
+    private void abrirChooserEnRuta(javafx.stage.DirectoryChooser chooser, String rutaTexto) {
+        java.io.File init = directorioExistenteMasCercano(rutaTexto);
+        if (init != null) chooser.setInitialDirectory(init);
+    }
+
+    /** Abre el FileChooser en la carpeta de la ruta del campo (o su ancestro existente más cercano). */
+    private void abrirChooserEnRuta(javafx.stage.FileChooser chooser, String rutaTexto) {
+        java.io.File init = directorioExistenteMasCercano(rutaTexto);
+        if (init != null) chooser.setInitialDirectory(init);
+    }
+
     // Detectar el área a partir de la ruta del proyecto
     private String detectarAreaDesdeRuta(String ruta) {
         if (ruta == null || ruta.isEmpty()) return null;
@@ -3021,7 +3069,7 @@ public class ControladorPrincipal {
             .collect(Collectors.toList());
         
         if (porArea.isEmpty()) {
-            mostrarAlerta("Advertencia", "No hay proyectos en el Area: " + areaSeleccionada, Alert.AlertType.WARNING);
+            mostrarAlerta("Advertencia", "No hay proyectos en el Área: " + areaSeleccionada, Alert.AlertType.WARNING);
             return;
         }
         
@@ -3030,7 +3078,7 @@ public class ControladorPrincipal {
     
     private void ejecutarProyectos(List<ProyectoAutomatizacion> listaProyectos) {
         if (ejecutando) {
-            mostrarAlerta("Advertencia", "Ya hay una ejecucin en curso", Alert.AlertType.WARNING);
+            mostrarAlerta("Advertencia", "Ya hay una ejecución en curso", Alert.AlertType.WARNING);
             return;
         }
 
@@ -3048,17 +3096,17 @@ public class ControladorPrincipal {
         List<ProyectoAutomatizacion> proyectosAEjecutar = new ArrayList<>(listaProyectos);
 
         agregarLog("\n========================================");
-        agregarLog(" INICIANDO EJECUCIN");
+        agregarLog(" INICIANDO EJECUCIÓN");
         agregarLog("Total de proyectos: " + listaProyectos.size());
         agregarLog("========================================\n");
 
         // Agrupar por VPN
         Map<TipoVPN, List<ProyectoAutomatizacion>> grupos = agruparPorVPN(listaProyectos);
 
-        // Determinar orden de ejecucin
+        // Determinar orden de ejecución
         List<TipoVPN> ordenEjecucion = determinarOrdenVPN(grupos);
 
-        agregarLog(" Distribucin por VPN:");
+        agregarLog(" Distribución por VPN:");
         for (TipoVPN tipo : ordenEjecucion) {
             agregarLog("   " + tipo.getDescripcion() + ": " + grupos.get(tipo).size() + " proyecto(s)");
         }
@@ -3105,7 +3153,7 @@ public class ControladorPrincipal {
                         ejecutarProyectoSync(proyecto);
                     }
 
-                    // Mostrar popup de desconexin si es necesario
+                    // Mostrar popup de desconexión si es necesario
                     if (tipoVPN != TipoVPN.SIN_VPN && tipoVPN != TipoVPN.HIBRIDO) {
                         mostrarPopupVPN(tipoVPN, false);
                     }
@@ -3113,13 +3161,13 @@ public class ControladorPrincipal {
 
                 Platform.runLater(() -> {
                     agregarLog("\n========================================");
-                    agregarLog(" Ejecucion COMPLETADA");
+                    agregarLog(" Ejecución COMPLETADA");
 
                     // Calcular y mostrar tiempo total
                     long tiempoFin = System.currentTimeMillis();
                     long duracionMs = tiempoFin - tiempoInicioEjecucion;
                     String tiempoTotal = formatearTiempoTotal(duracionMs);
-                    agregarLog(" Tiempo total de ejecucion: " + tiempoTotal);
+                    agregarLog(" Tiempo total de ejecución: " + tiempoTotal);
 
                     agregarLog("========================================\n");
 
@@ -3135,7 +3183,7 @@ public class ControladorPrincipal {
 
             } catch (Exception e) {
                 Platform.runLater(() -> {
-                    agregarLog(" Error en la Ejecucion: " + e.getMessage());
+                    agregarLog(" Error en la Ejecución: " + e.getMessage());
                     finalizarEjecucion();
                 });
             }
@@ -3510,7 +3558,7 @@ public class ControladorPrincipal {
         ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
         
         if (seleccionado == null) {
-            mostrarAlerta("Sin seleccion", "Selecciona un proyecto de la tabla primero", Alert.AlertType.WARNING);
+            mostrarAlerta("Sin selección", "Selecciona un proyecto de la tabla primero", Alert.AlertType.WARNING);
             return;
         }
         
@@ -3561,7 +3609,7 @@ public class ControladorPrincipal {
         }
             
         if (imagenes == null || imagenes.length == 0) {
-            mostrarAlerta("Sin capturas", "No se encontraron imagenes en la carpeta de capturas", Alert.AlertType.INFORMATION);
+            mostrarAlerta("Sin capturas", "No se encontraron imágenes en la carpeta de capturas", Alert.AlertType.INFORMATION);
             return;
         }
         
@@ -3818,16 +3866,16 @@ public class ControladorPrincipal {
     }
     
     private void generarInformes() {
-        List<ProyectoAutomatizacion> seleccionados = proyectosFiltrados.stream()
+        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
             .collect(Collectors.toList());
         
         if (seleccionados.isEmpty()) {
-            mostrarAlerta("Sin seleccion", "Selecciona al menos un proyecto para generar informes", Alert.AlertType.WARNING);
+            mostrarAlerta("Sin selección", "Selecciona al menos un proyecto para generar informes", Alert.AlertType.WARNING);
             return;
         }
         
-        agregarLog("=== GENERACION DE INFORMES INICIADA ===");
+        agregarLog("=== GENERACIÓN DE INFORMES INICIADA ===");
         agregarLog("Proyectos seleccionados: " + seleccionados.size());
         
         new Thread(() -> {
@@ -3845,12 +3893,10 @@ public class ControladorPrincipal {
                     Platform.runLater(() -> agregarLog("Procesando: " + proyAuto.getNombre() + " (" + totalInformesProyecto + " informe" + (totalInformesProyecto > 1 ? "s" : "") + ")"));
                     
                     // Validar que tenga configuracion minima
+                    // Ahora usa template global, asi que no requiere template individual
                     if (proyAuto.getRutaTemplateWord() == null || proyAuto.getRutaTemplateWord().isEmpty()) {
-                        Platform.runLater(() -> agregarLog("  ERROR: Sin template Word configurado"));
-                        proyectosFallidos++;
-                        informesFallidos += totalInformesProyecto;
-                        errores.append("- ").append(proyAuto.getNombre()).append(": Sin template Word\n");
-                        continue;
+                        // Usará template global - no es error
+                        Platform.runLater(() -> agregarLog("  Usando template global (sin template individual)"));
                     }
                     
                     // Crear proyecto del generador con TODAS las configuraciones
@@ -3869,7 +3915,7 @@ public class ControladorPrincipal {
                                       (proyAuto.getRuta() == null || proyAuto.getRuta().trim().isEmpty());
                     proyecto.setEsProyectoManual(esManual);
                     
-                    // Ruta de imagenes: usar configurada o carpeta de capturas por defecto
+                    // Ruta de imágenes: usar configurada o carpeta de capturas por defecto
                     String rutaImgs = proyAuto.getRutaImagenes();
                     if (!esManual && (rutaImgs == null || rutaImgs.isEmpty())) {
                         rutaImgs = proyAuto.getRuta() + "\\test-output\\capturaPantalla";
@@ -3996,7 +4042,7 @@ public class ControladorPrincipal {
             final String mensajeErrores = errores.toString();
             
             Platform.runLater(() -> {
-                agregarLog("=== GENERACION COMPLETADA ===");
+                agregarLog("=== GENERACIÓN COMPLETADA ===");
                 agregarLog("Informes generados: " + totalInformesExitosos);
                 agregarLog("Informes fallidos: " + totalInformesFallidos);
                 agregarLog("Proyectos procesados: " + totalProyectosExitosos + " exitosos, " + totalProyectosFallidos + " fallidos");
@@ -4004,7 +4050,7 @@ public class ControladorPrincipal {
                 // Guardar estado actualizado de los proyectos
                 guardarProyectos();
                 
-                String mensaje = String.format("Generacion de informes completada:\n\nInformes generados: %d\nInformes fallidos: %d\n\nProyectos procesados: %d exitosos, %d fallidos",
+                String mensaje = String.format("Generación de informes completada:\n\nInformes generados: %d\nInformes fallidos: %d\n\nProyectos procesados: %d exitosos, %d fallidos",
                     totalInformesExitosos, totalInformesFallidos, totalProyectosExitosos, totalProyectosFallidos);
                 if (totalInformesFallidos > 0 || totalProyectosFallidos > 0) {
                     mensaje += "\n\nErrores:\n" + mensajeErrores;
@@ -4023,7 +4069,7 @@ public class ControladorPrincipal {
         // Abrir FileChooser para seleccionar ubicación de guardado
         javafx.stage.FileChooser fileChooser = new javafx.stage.FileChooser();
         fileChooser.setTitle("Guardar Informe de Ejecución");
-        fileChooser.setInitialFileName("Informe_Ejecucion_" + 
+        fileChooser.setInitialFileName("Informe_Ejecución_" + 
             LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm")) + ".xlsx");
         
         fileChooser.getExtensionFilters().add(
@@ -4089,7 +4135,7 @@ public class ControladorPrincipal {
                 
                 // Crear fila de encabezados
                 org.apache.poi.ss.usermodel.Row headerRow = sheet.createRow(0);
-                String[] columnas = {"Nombre", "Área", "Retry", "Estado", "Última Ejecución", "Duración"};
+                String[] columnas = {"Nombre", "Área", "Retry", "Estado", "Última Ejecución", "Duración", "Responsable"};
                 
                 for (int i = 0; i < columnas.length; i++) {
                     org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
@@ -4097,9 +4143,16 @@ public class ControladorPrincipal {
                     cell.setCellStyle(headerStyle);
                 }
                 
-                // Agregar datos filtrados por empresa activa
+                // Agregar datos de todos los proyectos filtrados (ordenados alfabéticamente)
+                List<ProyectoAutomatizacion> proyectosOrdenados = new ArrayList<>(proyectosFiltrados);
+                proyectosOrdenados.sort((p1, p2) -> {
+                    String nombre1 = p1.getNombre() != null ? p1.getNombre() : "";
+                    String nombre2 = p2.getNombre() != null ? p2.getNombre() : "";
+                    return nombre1.compareToIgnoreCase(nombre2);
+                });
+                
                 int rowNum = 1;
-                for (ProyectoAutomatizacion proyecto : proyectosFiltrados) {
+                for (ProyectoAutomatizacion proyecto : proyectosOrdenados) {
                     org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowNum++);
                     
                     // Nombre
@@ -4140,31 +4193,27 @@ public class ControladorPrincipal {
                     }
                     cell4.setCellStyle(dataStyle);
                     
-                    // Duración (convertir segundos a minutos + segundos)
+                    // Duración (formato mm:ss)
                     org.apache.poi.ss.usermodel.Cell cell5 = row.createCell(5);
+                    String duracionFormato = "-";
                     if (proyecto.getDuracionSegundos() != null && proyecto.getDuracionSegundos() > 0) {
                         int totalSegundos = proyecto.getDuracionSegundos();
                         int minutos = totalSegundos / 60;
                         int segundos = totalSegundos % 60;
-                        
-                        String duracionFormato;
-                        if (minutos > 0 && segundos > 0) {
-                            duracionFormato = minutos + " min " + segundos + " seg";
-                        } else if (minutos > 0) {
-                            duracionFormato = minutos + " min";
-                        } else {
-                            duracionFormato = segundos + " seg";
-                        }
-                        cell5.setCellValue(duracionFormato);
-                    } else {
-                        cell5.setCellValue("-");
+                        duracionFormato = String.format("%02d:%02d", minutos, segundos);
                     }
+                    cell5.setCellValue(duracionFormato);
                     cell5.setCellStyle(dataStyle);
+                    
+                    // Responsable (Ignacio Riquelme con la duración)
+                    org.apache.poi.ss.usermodel.Cell cell6 = row.createCell(6);
+                    cell6.setCellValue("Ignacio Riquelme (" + duracionFormato + ")");
+                    cell6.setCellStyle(dataStyle);
                 }
                 
                 // ── Fila de Tiempo Total de Ejecución ──────────────────────────
                 long totalSegundosTotal = 0;
-                for (ProyectoAutomatizacion p : proyectos) {
+                for (ProyectoAutomatizacion p : proyectosOrdenados) {
                     if (p.getDuracionSegundos() != null && p.getDuracionSegundos() > 0) {
                         totalSegundosTotal += p.getDuracionSegundos();
                     }
@@ -4188,29 +4237,22 @@ public class ControladorPrincipal {
 
                 org.apache.poi.ss.usermodel.Row totalRow = sheet.createRow(rowNum);
 
-                // Celdas 0-4: etiqueta "Tiempo Total de Ejecución" (fusionadas)
-                for (int i = 0; i < 5; i++) {
+                // Celdas 0-5: etiqueta "Tiempo Total de Ejecución" (fusionadas)
+                for (int i = 0; i < 6; i++) {
                     org.apache.poi.ss.usermodel.Cell tc = totalRow.createCell(i);
                     tc.setCellStyle(totalLabelStyle);
                     if (i == 0) tc.setCellValue("Tiempo Total de Ejecución");
                 }
-                sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(rowNum, rowNum, 0, 4));
+                sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(rowNum, rowNum, 0, 5));
 
-                // Celda 5: valor formateado en horas y minutos
+                // Celda 6: valor formateado en hh:mm:ss
                 long horas    = totalSegundosTotal / 3600;
                 long minutos  = (totalSegundosTotal % 3600) / 60;
                 long segundos = totalSegundosTotal % 60;
 
-                String tiempoTotalStr;
-                if (horas > 0) {
-                    tiempoTotalStr = horas + " h " + minutos + " min " + segundos + " seg";
-                } else if (minutos > 0) {
-                    tiempoTotalStr = minutos + " min " + segundos + " seg";
-                } else {
-                    tiempoTotalStr = segundos + " seg";
-                }
+                String tiempoTotalStr = String.format("%02d:%02d:%02d", horas, minutos, segundos);
 
-                org.apache.poi.ss.usermodel.Cell totalCell = totalRow.createCell(5);
+                org.apache.poi.ss.usermodel.Cell totalCell = totalRow.createCell(6);
                 totalCell.setCellValue(tiempoTotalStr);
                 totalCell.setCellStyle(totalValueStyle);
                 // ────────────────────────────────────────────────────────────────
@@ -4237,7 +4279,7 @@ public class ControladorPrincipal {
                     alert.setContentText(
                         "Archivo: " + archivoDestino.getName() + "\n" +
                         "Ubicación: " + archivoDestino.getParent() + "\n" +
-                        "Proyectos incluidos: " + proyectosFiltrados.size() + "\n\n" +
+                        "Proyectos incluidos: " + proyectosOrdenados.size() + "\n\n" +
                         "¿Desea abrir el archivo?"
                     );
                     
@@ -4418,6 +4460,7 @@ public class ControladorPrincipal {
         btnExaminar.setOnAction(e -> {
             javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
             chooser.setTitle("Seleccionar carpeta de imágenes");
+            abrirChooserEnRuta(chooser, txtCarpeta.getText());
             java.io.File carpeta = chooser.showDialog(dialog.getOwner());
             
             if (carpeta != null && carpeta.exists()) {
@@ -5041,10 +5084,7 @@ public class ControladorPrincipal {
         btnBrowsePDF.setOnAction(e -> {
             javafx.stage.DirectoryChooser dc = new javafx.stage.DirectoryChooser();
             dc.setTitle("Seleccionar carpeta de PDF");
-            if (!txtRutaPDF.getText().isBlank()) {
-                File ini = new File(txtRutaPDF.getText());
-                if (ini.exists()) dc.setInitialDirectory(ini);
-            }
+            abrirChooserEnRuta(dc, txtRutaPDF.getText());
             File sel = dc.showDialog(dialog.getOwner());
             if (sel != null) txtRutaPDF.setText(sel.getAbsolutePath());
         });
@@ -6176,7 +6216,22 @@ public class ControladorPrincipal {
      * Alterna entre vista compacta (solo proyectos seleccionados) y vista normal (todos los proyectos)
      */
     private void alternarVistaCompacta() {
-        aplicarEstadoVistaCompacta(!vistaCompacta, true);
+        boolean activar = !vistaCompacta;
+        // SEGURIDAD: no permitir activar vista compacta si no hay proyectos seleccionados
+        if (activar) {
+            long cantSeleccionados = proyectos.stream()
+                .filter(p -> p.isSeleccionado()
+                    && (cboFiltroEmpresa == null || "Todas".equals(cboFiltroEmpresa.getValue())
+                        || (p.getEmpresa() != null && p.getEmpresa().equals(cboFiltroEmpresa.getValue()))))
+                .count();
+            if (cantSeleccionados == 0) {
+                mostrarAlerta("Vista Compacta",
+                    "No hay proyectos seleccionados en la empresa actual.\nSelecciona al menos un proyecto antes de activar la vista compacta.",
+                    Alert.AlertType.WARNING);
+                return;
+            }
+        }
+        aplicarEstadoVistaCompacta(activar, true);
     }
 
     /**
@@ -6247,10 +6302,20 @@ public class ControladorPrincipal {
             }
             
             // TERCERO: Cargar estado de vista compacta DESPUÉS de tener los proyectos seleccionados
+            // SEGURIDAD: si vistaCompacta=true pero no hay ningún proyecto seleccionado,
+            // NO activar el modo para evitar que la tabla quede completamente en blanco.
             String v = props.getProperty("vistaCompacta");
             if (v != null && v.equalsIgnoreCase("true")) {
-                // Aplicar sin sobrescribir el fichero (guardar=false)
-                aplicarEstadoVistaCompacta(true, false);
+                long cantSeleccionados = proyectos.stream().filter(ProyectoAutomatizacion::isSeleccionado).count();
+                if (cantSeleccionados > 0) {
+                    // Aplicar sin sobrescribir el fichero (guardar=false)
+                    aplicarEstadoVistaCompacta(true, false);
+                } else {
+                    // No hay seleccionados: ignorar vistaCompacta para no mostrar tabla vacía
+                    // Se persiste false para que no vuelva a ocurrir
+                    vistaCompacta = false;
+                    System.out.println("Advertencia: vistaCompacta ignorada porque no hay proyectos seleccionados.");
+                }
             }
             
             // CUARTO: Refrescar la tabla para mostrar los cambios
@@ -6376,6 +6441,167 @@ public class ControladorPrincipal {
         btn.addEventHandler(MouseEvent.MOUSE_PRESSED, e -> {
             if (popup.isShowing()) popup.hide();
         });
+    }
+
+    // ============ MÉTODOS PARA SISTEMA DE VISTAS GUARDADAS ============
+
+    /**
+     * Actualiza dinámicamente el menú de vistas guardadas
+     */
+    private void actualizarMenuVistasGuardadas() {
+        menuVistasGuardadas.getItems().clear();
+        
+        List<String> nombresVistas = GestorVistas.obtenerNombresVistas();
+        
+        if (nombresVistas.isEmpty()) {
+            MenuItem itemVacio = new MenuItem("(No hay vistas guardadas)");
+            itemVacio.setDisable(true);
+            menuVistasGuardadas.getItems().add(itemVacio);
+        } else {
+            for (String nombreVista : nombresVistas) {
+                // Crear submenú para cada vista con opciones Aplicar y Eliminar
+                Menu subMenuVista = new Menu(nombreVista);
+                
+                MenuItem itemAplicar = new MenuItem("▶️ Aplicar vista");
+                itemAplicar.setOnAction(e -> aplicarVistaPorNombre(nombreVista));
+                
+                MenuItem itemEliminar = new MenuItem("🗑️ Eliminar vista");
+                itemEliminar.setStyle("-fx-text-fill: #f44336;");
+                itemEliminar.setOnAction(e -> eliminarVistaPorNombre(nombreVista));
+                
+                subMenuVista.getItems().addAll(itemAplicar, itemEliminar);
+                menuVistasGuardadas.getItems().add(subMenuVista);
+            }
+        }
+    }
+
+    /**
+     * Guarda la selección actual de proyectos como una vista nueva
+     */
+    private void guardarVistaActual() {
+        // Pedir nombre para la vista
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("Guardar Vista");
+        dialog.setHeaderText("Guardar selección actual como vista");
+        dialog.setContentText("Nombre de la vista:");
+
+        Optional<String> resultado = dialog.showAndWait();
+        if (resultado.isPresent() && !resultado.get().trim().isEmpty()) {
+            String nombre = resultado.get().trim();
+
+            // Verificar si ya existe
+            if (GestorVistas.existeVista(nombre)) {
+                Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+                alert.setTitle("Vista Existente");
+                alert.setHeaderText("Ya existe una vista con el nombre '" + nombre + "'");
+                alert.setContentText("¿Deseas sobrescribirla?");
+                Optional<ButtonType> confirmar = alert.showAndWait();
+                if (confirmar.isEmpty() || confirmar.get() != ButtonType.OK) {
+                    return;
+                }
+            }
+
+            // Crear vista con los proyectos seleccionados y visibles según filtros
+            VistaGuardada vista = new VistaGuardada(nombre);
+            
+            // Obtener proyectos seleccionados Y visibles según filtros actuales
+            for (ProyectoAutomatizacion proyecto : proyectosOrdenados) {
+                if (proyecto.isSeleccionado()) {
+                    String clave = generarClaveProyecto(proyecto);
+                    vista.agregarProyecto(clave);
+                }
+            }
+
+            try {
+                GestorVistas.guardarVista(vista);
+                actualizarMenuVistasGuardadas();
+                agregarLog("✅ Vista guardada: " + nombre + " (" + vista.getCantidadProyectos() + " proyectos)");
+                mostrarAlerta("Vista Guardada", "Vista '" + nombre + "' guardada exitosamente con " + vista.getCantidadProyectos() + " proyectos.", Alert.AlertType.INFORMATION);
+            } catch (IOException e) {
+                agregarLog("❌ Error al guardar vista: " + e.getMessage());
+                mostrarAlerta("Error", "No se pudo guardar la vista: " + e.getMessage(), Alert.AlertType.ERROR);
+            }
+        }
+    }
+
+    /**
+     * Elimina una vista por nombre
+     */
+    private void eliminarVistaPorNombre(String nombre) {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Eliminar Vista");
+        alert.setHeaderText("¿Eliminar vista '" + nombre + "'?");
+        alert.setContentText("Esta acción no se puede deshacer.");
+
+        Optional<ButtonType> resultado = alert.showAndWait();
+        if (resultado.isPresent() && resultado.get() == ButtonType.OK) {
+            try {
+                GestorVistas.eliminarVista(nombre);
+                actualizarMenuVistasGuardadas();
+                agregarLog("✅ Vista eliminada: " + nombre);
+                mostrarAlerta("Vista Eliminada", "Vista '" + nombre + "' eliminada exitosamente.", Alert.AlertType.INFORMATION);
+            } catch (IOException ex) {
+                agregarLog("❌ Error al eliminar vista: " + ex.getMessage());
+                mostrarAlerta("Error", "No se pudo eliminar la vista: " + ex.getMessage(), Alert.AlertType.ERROR);
+            }
+        }
+    }
+
+    /**
+     * Aplica una vista por nombre restaurando las selecciones de proyectos
+     */
+    private void aplicarVistaPorNombre(String nombre) {
+        VistaGuardada vista = GestorVistas.obtenerVista(nombre);
+        if (vista == null) {
+            mostrarAlerta("Error", "No se encontró la vista '" + nombre + "'", Alert.AlertType.ERROR);
+            return;
+        }
+
+        // Desmarcar todos los proyectos primero
+        for (ProyectoAutomatizacion proyecto : proyectos) {
+            proyecto.setSeleccionado(false);
+        }
+
+        // Marcar los proyectos de la vista
+        int proyectosEncontrados = 0;
+        for (String clave : vista.getProyectosSeleccionados()) {
+            for (ProyectoAutomatizacion proyecto : proyectos) {
+                String claveProyecto = generarClaveProyecto(proyecto);
+                if (claveProyecto.equals(clave)) {
+                    proyecto.setSeleccionado(true);
+                    proyectosEncontrados++;
+                    break;
+                }
+            }
+        }
+
+        // Guardar cambios y refrescar
+        guardarProyectos();
+        tablaProyectos.refresh();
+        actualizarEstadisticas();
+
+        // Activar vista compacta automáticamente
+        aplicarEstadoVistaCompacta(true, false);
+
+        agregarLog("✅ Vista aplicada: " + nombre + " (" + proyectosEncontrados + " proyectos restaurados)");
+        mostrarAlerta("Vista Aplicada", "Vista '" + nombre + "' aplicada exitosamente. " + proyectosEncontrados + " proyectos seleccionados.", Alert.AlertType.INFORMATION);
+    }
+
+    /**
+     * Genera la clave única para un proyecto en formato "empresa::nombre"
+     */
+    private String generarClaveProyecto(ProyectoAutomatizacion proyecto) {
+        String empresa = proyecto.getEmpresa() != null ? proyecto.getEmpresa() : "";
+        String nombre = proyecto.getNombre() != null ? proyecto.getNombre() : "";
+        
+        // Normalizar (quitar tildes) y comparar en minúsculas
+        String normalized = Normalizer.normalize(nombre, Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        String clave = normalized.toLowerCase().replaceAll("[^\\p{Alnum}\\s]", " ").replaceAll("\\s+", " ").trim();
+        
+        // Eliminar prefijo numérico tipo "15 - " si existe
+        clave = clave.replaceFirst("^\\d+\\s*[-:]?\\s*", "");
+        
+        return empresa + "::" + clave;
     }
 }
 

@@ -48,8 +48,15 @@ public class EjecutorAutomatizaciones {
                 // PASO 1: Limpiar imágenes de la carpeta de capturas antes de ejecutar
                 limpiarImagenesAnteriores(proyecto, logCallback);
 
+                // Resolver el directorio real de ejecución (soporta proyectos
+                // con el código anidado en una subcarpeta, ej: .../auxilia)
+                File dirEjecucion = resolverDirectorioEjecucion(proyecto);
+                if (dirEjecucion != null && !dirEjecucion.getAbsolutePath().equalsIgnoreCase(proyecto.getRuta())) {
+                    if (logCallback != null) logCallback.accept("  ℹ Código en subcarpeta detectado - ejecutando en: " + dirEjecucion.getAbsolutePath());
+                }
+
                 // Crear script temporal para ejecutar
-                File scriptTemp = crearScriptEjecucion(proyecto);
+                File scriptTemp = crearScriptEjecucion(proyecto, dirEjecucion);
                 
                 // Crear un archivo marker para detectar cuando termina
                 File markerFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".done");
@@ -60,7 +67,7 @@ public class EjecutorAutomatizaciones {
                     "cmd.exe", "/c", "start", "\"" + proyecto.getNombre() + "\"", "/wait", "/max", 
                     "cmd.exe", "/c", scriptTemp.getAbsolutePath() + " & echo DONE > \"" + markerFile.getAbsolutePath() + "\""
                 );
-                pb.directory(new File(proyecto.getRuta()));
+                pb.directory(dirEjecucion);
 
                 if (logCallback != null) {
                     logCallback.accept(" Ejecutando: " + proyecto.getNombre());
@@ -145,20 +152,46 @@ public class EjecutorAutomatizaciones {
     }
 
     /**
-     * Crea un script .bat temporal para la ejecucin
+     * Resuelve el directorio real donde debe ejecutarse el proyecto.
+     * Si la ruta configurada no contiene el archivo marcador correspondiente
+     * (pom.xml para Maven/Maven+Newman, collection.json para Newman), busca
+     * en las subcarpetas de primer nivel. Devuelve null si la ruta es vacía.
      */
-    private File crearScriptEjecucion(ProyectoAutomatizacion proyecto) throws IOException {
+    private File resolverDirectorioEjecucion(ProyectoAutomatizacion proyecto) {
+        String ruta = proyecto.getRuta();
+        if (ruta == null || ruta.trim().isEmpty()) return null;
+        File base = new File(ruta);
+        if (!base.isDirectory()) return base;
+
+        String marcador = proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN
+                ? "collection.json" : "pom.xml";
+        if (new File(base, marcador).exists()) return base;
+
+        File[] subs = base.listFiles(File::isDirectory);
+        if (subs == null) return base;
+        java.util.Arrays.sort(subs);
+        for (File sub : subs) {
+            if (new File(sub, marcador).exists()) return sub;
+        }
+        return base;
+    }
+
+    /**
+     * Crea un script .bat temporal para la ejecución
+     */
+    private File crearScriptEjecucion(ProyectoAutomatizacion proyecto, File dirEjecucion) throws IOException {
         File scriptTemp = File.createTempFile("exec_", ".bat");
         File exitCodeFile = new File(scriptTemp.getParentFile(), scriptTemp.getName() + ".exitcode");
         File logFile = new File(scriptTemp.getParentFile(), scriptTemp.getName().replace(".bat", ".log"));
-        
+
         // Guardar ruta del log en el proyecto
         proyecto.setRutaLogEjecucion(logFile.getAbsolutePath());
 
         StringBuilder script = new StringBuilder();
         script.append("@echo off\n");
         script.append("chcp 65001 >nul\n");
-        script.append("cd /d \"").append(proyecto.getRuta()).append("\"\n");
+        String dirTrabajo = dirEjecucion != null ? dirEjecucion.getAbsolutePath() : proyecto.getRuta();
+        script.append("cd /d \"").append(dirTrabajo).append("\"\n");
         script.append("echo.\n");
         script.append("echo ========================================\n");
         script.append("echo   ").append(proyecto.getNombre()).append("\n");
@@ -166,12 +199,20 @@ public class EjecutorAutomatizaciones {
         script.append("echo   VPN: ").append(proyecto.getTipoVPN().getDescripcion()).append("\n");
         script.append("echo ========================================\n");
         script.append("echo.\n");
-        
+
+        // Detectar Maven - usar ruta fija directamente (mas confiable que 'where' dentro de la ventana cmd anidada)
+        script.append("if exist \"C:\\apache-maven-3.9.11\\bin\\mvn.cmd\" (\n");
+        script.append("    set MVN_CMD=C:\\apache-maven-3.9.11\\bin\\mvn.cmd\n");
+        script.append(") else (\n");
+        script.append("    set MVN_CMD=mvn\n");
+        script.append(")\n");
+        script.append("echo.\n");
+
         // Comando según tipo de ejecución - EJECUCIÓN COMPLETAMENTE NORMAL (cero cambios)
         if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN) {
             script.append("echo Ejecutando mvn test...\n");
             script.append("echo.\n");
-            script.append("call mvn test\n");
+            script.append("call \"%MVN_CMD%\" test\n");
         } else if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN) {
             script.append("echo Ejecutando newman...\n");
             script.append("echo.\n");
@@ -179,12 +220,14 @@ public class EjecutorAutomatizaciones {
         } else {
             script.append("echo Ejecutando mvn test + newman...\n");
             script.append("echo.\n");
-            script.append("call mvn test\n");
+            script.append("call \"%MVN_CMD%\" test\n");
             script.append("echo.\n");
             script.append("echo Ejecutando newman...\n");
             script.append("call newman run collection.json\n");
         }
-        
+
+        script.append("echo.\n");
+        script.append("echo ========================================\n");
         script.append("set TEST_RESULT=%ERRORLEVEL%\n");
         script.append("echo.\n");
         script.append("echo ========================================\n");
@@ -196,7 +239,7 @@ public class EjecutorAutomatizaciones {
         script.append(")\n");
         script.append("echo ========================================\n");
         script.append("echo.\n");
-        
+
         script.append("echo %TEST_RESULT% > \"").append(exitCodeFile.getAbsolutePath()).append("\"\n");
         script.append("timeout /t 3 >nul\n");
         script.append("exit /b %TEST_RESULT%\n");
@@ -208,7 +251,7 @@ public class EjecutorAutomatizaciones {
     }
 
     /**
-     * Limpia procesos de CMD y Chrome antes/despus de la ejecucin
+     * Limpia procesos de CMD y Chrome antes/después de la ejecución
      */
     private void limpiarProcesos(Consumer<String> logCallback) {
         try {
@@ -249,15 +292,17 @@ public class EjecutorAutomatizaciones {
             logContent.append("Fecha: ").append(java.time.LocalDateTime.now()).append("\n");
             logContent.append("========================================\n\n");
 
-            // Para Maven: buscar los reportes de Surefire
-            if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN || 
+            // Para Maven: buscar los reportes de Surefire y otros logs
+            if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN ||
                 proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN_NEWMAN) {
-                
-                File surefireReportsDir = new File(proyecto.getRuta() + File.separator + "test-output" + File.separator + "surefire-reports");
+
+                File dirEjecucion = resolverDirectorioEjecucion(proyecto);
+                String baseDir = dirEjecucion != null ? dirEjecucion.getAbsolutePath() : proyecto.getRuta();
+                File surefireReportsDir = new File(baseDir + File.separator + "test-output" + File.separator + "surefire-reports");
                 if (surefireReportsDir.exists()) {
                     logContent.append("REPORTES DE MAVEN (Surefire):\n");
                     logContent.append("========================================\n");
-                    
+
                     // Buscar archivos .txt en surefire-reports
                     File[] reportFiles = surefireReportsDir.listFiles((dir, name) -> name.endsWith(".txt"));
                     if (reportFiles != null && reportFiles.length > 0) {
@@ -274,6 +319,26 @@ public class EjecutorAutomatizaciones {
                         logContent.append("No se encontraron reportes .txt\n");
                     }
                     logContent.append("\n");
+                }
+
+                // Buscar archivos .log adicionales en test-output
+                File testOutputDir = new File(baseDir + File.separator + "test-output");
+                if (testOutputDir.exists()) {
+                    File[] logFiles = testOutputDir.listFiles((dir, name) -> name.endsWith(".log"));
+                    if (logFiles != null && logFiles.length > 0) {
+                        logContent.append("LOGS ADICIONALES (test-output):\n");
+                        logContent.append("========================================\n");
+                        for (File logFile : logFiles) {
+                            logContent.append("\n--- ").append(logFile.getName()).append(" ---\n");
+                            try {
+                                String content = new String(java.nio.file.Files.readAllBytes(logFile.toPath()), "UTF-8");
+                                logContent.append(content).append("\n");
+                            } catch (Exception e) {
+                                logContent.append("Error leyendo log: ").append(e.getMessage()).append("\n");
+                            }
+                        }
+                        logContent.append("\n");
+                    }
                 }
             }
 
@@ -298,14 +363,16 @@ public class EjecutorAutomatizaciones {
             String rutaCapturas = proyecto.getRutaImagenes();
 
             if (rutaCapturas == null || rutaCapturas.trim().isEmpty()) {
+                File dirEjecucion = resolverDirectorioEjecucion(proyecto);
+                String baseDir = dirEjecucion != null ? dirEjecucion.getAbsolutePath() : proyecto.getRuta();
                 // Determinar la carpeta por defecto según el tipo de ejecución
                 if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN ||
                     proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.MAVEN_NEWMAN) {
                     // Para Maven: test-output/capturaPantalla
-                    rutaCapturas = proyecto.getRuta() + File.separator + "test-output" + File.separator + "capturaPantalla";
+                    rutaCapturas = baseDir + File.separator + "test-output" + File.separator + "capturaPantalla";
                 } else if (proyecto.getTipoEjecucion() == ProyectoAutomatizacion.TipoEjecucion.NEWMAN) {
                     // Para Newman: capturas (asumido, ajustar según necesidad)
-                    rutaCapturas = proyecto.getRuta() + File.separator + "capturas";
+                    rutaCapturas = baseDir + File.separator + "capturas";
                 }
             }
 
@@ -350,7 +417,7 @@ public class EjecutorAutomatizaciones {
     }
     
     /**
-     * Detiene la ejecucin actual
+     * Detiene la ejecución actual
      */
     public void detener() {
         // Interrumpir el hilo de ejecución si existe

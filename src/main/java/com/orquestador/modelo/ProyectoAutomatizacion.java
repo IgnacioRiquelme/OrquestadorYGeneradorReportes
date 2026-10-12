@@ -24,7 +24,10 @@ public class ProyectoAutomatizacion {
     private int intentoActual = 0; // Intento actual (0 = no iniciado, 1 = primer intento, 2 = segundo, 3 = tercero)
     private int totalReintentos = 3; // Total de reintentos permitidos
 
-    // Campos para generacion de informes
+    // Campo para marcar proyectos que requieren ayuda (Cloudflare)
+    private boolean requiereAyuda = false;
+
+    // Campos para generación de informes
     private String rutaImagenes;
     private String rutaTemplateWord;
     private String rutaSalidaWord;
@@ -325,6 +328,15 @@ public class ProyectoAutomatizacion {
     public void resetearReintentos() {
         this.intentoActual = 0;
         this.retryHabilitado = false;
+    }
+
+    // Getter y Setter para requiereAyuda
+    public boolean isRequiereAyuda() {
+        return requiereAyuda;
+    }
+
+    public void setRequiereAyuda(boolean requiereAyuda) {
+        this.requiereAyuda = requiereAyuda;
     }
 }
 

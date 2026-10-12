@@ -18,7 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Gestor de configuracin y persistencia de proyectos
+ * Gestor de configuración y persistencia de proyectos
  */
 public class GestorConfiguracion {
     private static final String DIRECTORIO_CONFIG = System.getProperty("user.home") 
@@ -58,7 +58,11 @@ public class GestorConfiguracion {
         try (FileReader reader = new FileReader(archivo)) {
             Type listType = new TypeToken<ArrayList<ProyectoAutomatizacion>>(){}.getType();
             List<ProyectoAutomatizacion> proyectos = gson.fromJson(reader, listType);
-            return proyectos != null ? proyectos : new ArrayList<>();
+            if (proyectos != null) {
+                for (ProyectoAutomatizacion p : proyectos) normalizarRutas(p);
+                return proyectos;
+            }
+            return new ArrayList<>();
         } catch (Exception e) {
             System.err.println("Error al cargar proyectos: " + e.getMessage());
             e.printStackTrace();
@@ -67,7 +71,49 @@ public class GestorConfiguracion {
     }
 
     /**
-     * Crea el directorio de configuracin si no existe
+     * Normaliza las rutas de un proyecto: colapsa separadores duplicados
+     * "\\\\" -> "\\" en todos los campos de ruta (defecto histórico del
+     * instalador que duplicaba los backslashes). Conserva prefijos UNC.
+     */
+    public static void normalizarRutas(ProyectoAutomatizacion p) {
+        if (p == null) return;
+        p.setRuta(colapsarSeparadores(p.getRuta()));
+        p.setRutaImagenes(colapsarSeparadores(p.getRutaImagenes()));
+        p.setRutaTemplateWord(colapsarSeparadores(p.getRutaTemplateWord()));
+        p.setRutaSalidaWord(colapsarSeparadores(p.getRutaSalidaWord()));
+        p.setRutaSalidaPdf(colapsarSeparadores(p.getRutaSalidaPdf()));
+        p.setRutaLogEjecucion(colapsarSeparadores(p.getRutaLogEjecucion()));
+        if (p.getImagenesSeleccionadas() != null) {
+            p.getImagenesSeleccionadas().replaceAll(GestorConfiguracion::colapsarSeparadores);
+        }
+        if (p.getInformes() != null) {
+            for (com.orquestador.modelo.ConfiguracionInforme inf : p.getInformes()) {
+                if (inf == null) continue;
+                inf.setTemplateWord(colapsarSeparadores(inf.getTemplateWord()));
+                inf.setPatronImagenes(colapsarSeparadores(inf.getPatronImagenes()));
+                if (inf.getImagenesSeleccionadas() != null) {
+                    inf.getImagenesSeleccionadas().replaceAll(GestorConfiguracion::colapsarSeparadores);
+                }
+            }
+        }
+    }
+
+    /**
+     * Colapsa secuencias de dos o más backslashes a uno solo.
+     * No toca el prefijo "\\\\" inicial (ruta UNC \\servidor\recurso).
+     */
+    private static String colapsarSeparadores(String ruta) {
+        if (ruta == null || ruta.isEmpty()) return ruta;
+        String prefijo = ruta.startsWith("\\\\") ? "\\\\" : "";
+        String resto = prefijo.isEmpty() ? ruta : ruta.substring(2);
+        while (resto.contains("\\\\")) {
+            resto = resto.replace("\\\\", "\\");
+        }
+        return prefijo + resto;
+    }
+
+    /**
+     * Crea el directorio de configuración si no existe
      */
     private static void crearDirectorioConfiguracion() throws IOException {
         Path path = Paths.get(DIRECTORIO_CONFIG);
@@ -77,7 +123,7 @@ public class GestorConfiguracion {
     }
 
     /**
-     * Obtiene la ruta del directorio de configuracin
+     * Obtiene la ruta del directorio de configuración
      */
     public static String getDirectorioConfiguracion() {
         return DIRECTORIO_CONFIG;
