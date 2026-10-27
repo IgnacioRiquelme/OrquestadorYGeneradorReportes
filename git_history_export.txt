@@ -1,0 +1,28 @@
+91f0761|2026-03-20 02:52:33 -0300|IARC|tu-email@ejemplo.com|chore: agregar archivos fuente faltantes y limpiar archivos obsoletos
+22892e5|2026-03-19 22:03:38 -0300|IARC|tu-email@ejemplo.com|fix: soportar formato de imagen con milisegundos (YYYYMMDD_HHMMSSmmm_N)
+a9b6f3a|2026-03-19 20:05:45 -0300|IARC|tu-email@ejemplo.com|fix: filtrar informe Excel por empresa activa en lugar de mostrar todas
+765624d|2026-03-11 11:39:37 -0300|IARC|tu-email@ejemplo.com|fix: corregir separacion de seleccion por empresa en vista compacta
+39ae43c|2026-03-11 09:21:39 -0300|IARC|tu-email@ejemplo.com|Subida: actualizaciones locales
+1aa24eb|2025-12-19 12:21:35 -0300|IARC|tu-email@ejemplo.com|feat: add simple license server and client activation (LicenciaService + license-server)
+21cab94|2025-12-19 12:06:41 -0300|IARC|tu-email@ejemplo.com|chore: mejorar cancelación y control de procesos (ProcessRegistry, espera y kill)
+ca80b08|2025-12-19 00:12:33 -0300|IARC|tu-email@ejemplo.com|feat: agregar programación de tareas (fecha/hora), CSV de resultados y mejora de hora/min input; UI y programador
+caa6bc1|2025-12-18 00:30:00 -0300|IARC|tu-email@ejemplo.com|backup: post placeholder fix 2025-12-18
+7043863|2025-12-18 00:04:10 -0300|IARC|tu-email@ejemplo.com|backup: pre placeholder fix 2025-12-18
+80dfc73|2025-12-11 15:33:03 -0300|IARC|tu-email@ejemplo.com|feat(ui): copiar ruta al portapapeles al usar 'Explorar directorio' desde el menú contextual
+e2b1804|2025-12-11 15:21:13 -0300|IARC|tu-email@ejemplo.com|feat(ui): explorar directorio desde menú contextual y abrir FileChoosers en rutas actuales; Template Word abre en 'C:\\Users\\IARC\\Desktop\\Nuevos esqueletos'
+5f05ceb|2025-12-11 01:05:51 -0300|IARC|tu-email@ejemplo.com|feat: agregar botón Actualizar ChromeDriver para reemplazar chromedriver.exe en todos los proyectos
+964bed6|2025-12-10 15:52:33 -0300|IARC|tu-email@ejemplo.com|fix: escribir .bat temporales en Cp1252 (evitar 'echo.' -> 'cho.' en cmd)'
+6f737c8|2025-12-10 15:29:59 -0300|IARC|tu-email@ejemplo.com|feat: agregar opción Hibrido en ComboBox de VPN (filtro, agregar y editar proyectos)
+fda6262|2025-12-02 12:18:26 -0300|IARC|tu-email@ejemplo.com|UI: detectar Contactenos por substring (ignora prefijos numéricos y tildes)
+f571e75|2025-12-02 11:25:39 -0300|IARC|tu-email@ejemplo.com|UI: detectar y mostrar ' Credenciales' solo para 3 proyectos Contactenos (normaliza tildes/case)
+408330b|2025-12-02 11:22:10 -0300|IARC|tu-email@ejemplo.com|UI: cambiar icono de Config a ' Credenciales' para proyectos Contactenos
+2aa3235|2025-12-02 11:19:30 -0300|IARC|tu-email@ejemplo.com|Respaldo cambios credenciales - 2025-12-02
+9a71142|2025-11-27 11:46:24 -0300|IARC|tu-email@ejemplo.com|Guardar cambios adicionales en ejecución y UI para asegurar cierre de CMD y mejoras.
+87b50d3|2025-11-27 09:06:31 -0300|IARC|tu-email@ejemplo.com|Aplicar correcciones finales: checkbox global, ajustes en modelo y UI. Proyecto listo con bug corregido.
+585fc53|2025-11-26 19:50:08 -0300|IARC|tu-email@ejemplo.com|Corregir bug en checkbox del encabezado: ahora afecta a todos los proyectos, no solo visibles. Asegura selección/deselección global.
+e1333ec|2025-11-26 19:47:55 -0300|IARC|tu-email@ejemplo.com|Respaldo antes de corrección del bug en selección de proyectos - Estado actual del orquestador
+7d2ddb2|2025-11-25 08:56:22 -0300|IARC|tu-email@ejemplo.com|backup: añadir filtro VPN y respetar selección por filtro
+903a676|2025-11-24 19:28:33 -0300|IARC|tu-email@ejemplo.com|backup: manual-imagenes-dragdrop - agrega logs y DIAGNOSTICO_PROBLEMA
+61dea48|2025-11-21 19:43:14 -0300|IARC|tu-email@ejemplo.com|feat: soportar segundos en timestamps y drag&drop para imágenes manuales
+4522428|2025-11-20 15:58:43 -0300|IARC|tu-email@ejemplo.com|backup: aplicar cambios - selector imágenes, limpiar configuración, soportar .jpg/.jpeg, actualizar GestorImagenes
+a020af3|2025-11-18 10:29:21 -0300|IARC|tu-email@ejemplo.com|Initial commit: Orquestador de Automatizaciones - Project setup and configuration
