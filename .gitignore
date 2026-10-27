@@ -35,3 +35,10 @@ run.log
 # Temp files
 *.tmp
 *.bak
+node_modules/
+license-server/activations.json
+license-server/package-lock.json
+build_log.txt
+git_history_export.txt
+*.bat
+~$*
