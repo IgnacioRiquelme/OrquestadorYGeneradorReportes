@@ -9,7 +9,8 @@ $ErrorActionPreference = 'Stop'
 $ROOT         = $PSScriptRoot
 $TARGET       = "$ROOT\target"
 $DIST         = "C:\orq_dist"
-$JAR          = "orquestador-automatizaciones-1.1.0-all.jar"
+$VERSION      = "1.1.0"
+$JAR          = "orquestador-automatizaciones-$VERSION-all.jar"
 $ICON         = "$ROOT\assets\irc_solutions.ico"
 $ISCC         = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $ISCC) { throw "No se encontro Inno Setup 6 (ISCC.exe)." }
@@ -244,8 +245,8 @@ $issScript = @"
 
 #define MyAppName "Orquestador de Automatizaciones"
 #define MyAppExeName "OrquestadorAutomatizaciones.exe"
-#define MyAppVersion "1.0"
-#define MyAppPublisher "Orquestador"
+#define MyAppVersion "$VERSION"
+#define MyAppPublisher "IRC Solutions"
 #define MyAppSourceDir "$($APP_IMAGE_DIR.Replace('\','\\'))"
 #define MyOutputDir "$($DIST.Replace('\','\\'))"
 
