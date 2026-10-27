@@ -75,6 +75,38 @@ public class GeneradorDocumentos {
         return RUTA_TEMPLATE_GLOBAL;
     }
 
+    /**
+     * Devuelve un directorio de salida utilizable: el configurado si existe
+     * o se puede crear; si no, la carpeta del proyecto (registrando la caída
+     * como advertencia para que quede en el log de generación).
+     */
+    private String resolverDirSalida(String configurada) {
+        if (configurada != null && !configurada.trim().isEmpty()) {
+            File d = new File(configurada);
+            if (d.isDirectory() || d.mkdirs()) {
+                return configurada;
+            }
+            advertencias.add("Directorio de salida no disponible: " + configurada
+                    + " — se usó la carpeta del proyecto");
+        }
+        // Fallback: rutaSalida (ruta del proyecto cargada por el controlador),
+        // luego el padre de la carpeta de imágenes, luego el home del usuario
+        String base = proyecto.getRutaSalida();
+        if (base == null || base.trim().isEmpty()) {
+            String imgs = proyecto.getRutaImagenes();
+            if (imgs != null && !imgs.trim().isEmpty()) {
+                File padre = new File(imgs).getParentFile();
+                if (padre != null) base = padre.getAbsolutePath();
+            }
+        }
+        if (base == null || base.trim().isEmpty()) {
+            base = System.getProperty("user.home");
+        }
+        File d = new File(base);
+        if (!d.isDirectory()) d.mkdirs();
+        return d.getAbsolutePath();
+    }
+
     private void registrarAdvertenciaImagenes(String etiquetaInforme, int insertadas, int esperadas) {
         if (esperadas > 0 && insertadas < esperadas) {
             String etiqueta = (etiquetaInforme == null || etiquetaInforme.isEmpty()) ? "principal" : etiquetaInforme;
@@ -105,6 +137,12 @@ public class GeneradorDocumentos {
      * Genera el documento Word y PDF
      */
     public boolean generar() {
+        // Normalizar rutas de salida: si el directorio configurado no existe
+        // y no se puede crear (p.ej. rutas heredadas de otro equipo/usuario),
+        // se cae a la carpeta del proyecto para no abortar la generación.
+        proyecto.setRutaSalidaWord(resolverDirSalida(proyecto.getRutaSalidaWord()));
+        proyecto.setRutaSalidaPdf(resolverDirSalida(proyecto.getRutaSalidaPdf()));
+
         // Si el proyecto tiene configurados múltiples informes, usar el generador múltiple
         if (proyecto.getInformes() != null && !proyecto.getInformes().isEmpty()) {
             return generarMultiplesInformes();

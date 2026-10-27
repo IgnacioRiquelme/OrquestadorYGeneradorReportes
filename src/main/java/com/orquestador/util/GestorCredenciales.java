@@ -8,7 +8,13 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Gestor para cargar y guardar credenciales de los proyectos especiales
@@ -19,26 +25,68 @@ public class GestorCredenciales {
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     
     /**
-     * Obtiene la ruta del archivo Principal.json para cada proyecto
+     * Obtiene la ruta del archivo Principal.json para cada proyecto.
+     * Primero intenta la ruta estándar (src/main/resources/testdata); si no
+     * existe —proyectos espejo con profundidades de carpeta variables— busca
+     * recursivamente desde la ruta del proyecto y sus directorios padre.
      */
     private static String obtenerRutaPrincipalJson(ProyectoAutomatizacion proyecto) {
         String ruta = proyecto.getRuta();
-        String nombre = proyecto.getNombre().toLowerCase();
-        
-        // Determinar la ruta relativa según el nombre del proyecto
-        String rutaRelativa = null;
-        
-        // Todos los proyectos especiales usan la misma ubicación relativa del Principal.json
-        rutaRelativa = "src/main/resources/testdata/Principal.json";
-        
+        String rutaRelativa = "src/main/resources/testdata/Principal.json";
+
         // Normalizar separadores
         ruta = ruta.replace('/', '\\');
         if (!ruta.endsWith("\\")) {
             ruta += "\\";
         }
-        
+
         String pathFull = ruta + rutaRelativa.replace('/', '\\');
+        if (new File(pathFull).exists()) {
+            return pathFull;
+        }
+
+        // Fallback: búsqueda recursiva SOLO dentro del árbol del proyecto.
+        // Las automatizaciones resuelven el JSON como ./src/main/resources/testdata/
+        // relativo a su directorio de trabajo (= proyecto.getRuta()); subir a
+        // directorios padre encontraría archivos de proyectos hermanos.
+        File encontrado = buscarPrincipalJsonRecursivo(new File(ruta));
+        if (encontrado != null) {
+            return encontrado.getAbsolutePath();
+        }
+
+        // Último recurso: devolver la ruta estándar (para mensajes de error)
         return pathFull;
+    }
+
+    /**
+     * Búsqueda recursiva de Principal.json. Prefiere rutas bajo
+     * src/main/resources/testdata e ignora las copias compiladas en target/
+     * y carpetas de dependencias (node_modules, .git).
+     */
+    private static File buscarPrincipalJsonRecursivo(File dir) {
+        if (dir == null || !dir.isDirectory()) return null;
+        File[] hijos = dir.listFiles();
+        if (hijos == null) return null;
+
+        File candidato = null;
+        for (File f : hijos) {
+            if (f.isFile() && f.getName().equalsIgnoreCase("Principal.json")) {
+                String path = f.getAbsolutePath().replace('/', '\\').toLowerCase();
+                if (path.contains("src\\main\\resources\\testdata")) return f;
+                if (!path.contains("\\target\\") && candidato == null) candidato = f;
+            } else if (f.isDirectory()) {
+                String nombreDir = f.getName().toLowerCase();
+                if (nombreDir.equals("target") || nombreDir.equals("node_modules")
+                        || nombreDir.equals(".git")) continue;
+                File r = buscarPrincipalJsonRecursivo(f);
+                if (r != null) {
+                    String path = r.getAbsolutePath().replace('/', '\\').toLowerCase();
+                    if (path.contains("src\\main\\resources\\testdata")) return r;
+                    if (candidato == null) candidato = r;
+                }
+            }
+        }
+        return candidato;
     }
     
     /**
@@ -247,6 +295,323 @@ public class GestorCredenciales {
         } else {
             // BCI por defecto
             return new String[]{"user", "pasword"};
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Credenciales genéricas (cualquier proyecto con login)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /** Campo de credencial editable (JSON: ruta tipo "datos1.user"; CSV: índice de columna). */
+    public static class CampoCredencial {
+        public final String clave;
+        public final String etiqueta;
+        public String valor;
+        public final boolean esPassword;
+
+        public CampoCredencial(String clave, String etiqueta, String valor, boolean esPassword) {
+            this.clave = clave;
+            this.etiqueta = etiqueta;
+            this.valor = valor;
+            this.esPassword = esPassword;
+        }
+    }
+
+    // Claves que representan credenciales de login
+    private static final Pattern CLAVE_CRED = Pattern.compile("(?i).*(user|usuario|pasword|password|contrase[ñn]|clave).*");
+    private static final Pattern CLAVE_RUT  = Pattern.compile("(?i)rut.*");
+    private static final Pattern CLAVE_PASS = Pattern.compile("(?i).*(pasword|contrasen|clave|password).*");
+
+    /**
+     * Ubica el archivo de credenciales del proyecto buscando SOLO dentro de
+     * su árbol (las automatizaciones las cargan relativas a user.dir). Se
+     * evalúan todos los candidatos y se devuelve el de mayor prioridad que
+     * realmente contenga campos de credencial:
+     *  Principal.json, CSVBCISeguros.csv, config.json, credenciales.csv,
+     *  Unitario.xlsx/datapool.xlsx, cualquier .json bajo testdata y
+     *  cualquier .csv/.xlsx bajo una carpeta "data".
+     */
+    public static File encontrarArchivoCredenciales(ProyectoAutomatizacion proyecto) {
+        if (proyecto == null || proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
+            return null;
+        }
+        List<File> candidatos = new ArrayList<>();
+        recolectarArchivosCredenciales(new File(proyecto.getRuta()), candidatos);
+        candidatos.sort(java.util.Comparator.comparingInt(GestorCredenciales::prioridadArchivo));
+        for (File f : candidatos) {
+            try {
+                if (!leerCamposCredenciales(f).isEmpty()) {
+                    return f;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    /** Recolecta archivos candidatos a contener credenciales dentro del proyecto. */
+    private static void recolectarArchivosCredenciales(File dir, List<File> out) {
+        if (dir == null || !dir.isDirectory()) return;
+        File[] hijos = dir.listFiles();
+        if (hijos == null) return;
+        for (File f : hijos) {
+            if (f.isFile()) {
+                String n = f.getName().toLowerCase();
+                if (n.startsWith("~$") || n.startsWith(".")) continue;
+                String parent = f.getParentFile().getName().toLowerCase();
+                if (n.equals("principal.json") || n.equals("csvbciseguros.csv")
+                        || n.equals("config.json") || n.equals("credenciales.csv")
+                        || n.equals("unitario.xlsx") || n.equals("datapool.xlsx")
+                        || (n.endsWith(".json") && parent.equals("testdata"))
+                        || (n.endsWith(".csv") && parent.equals("data"))
+                        || (n.endsWith(".xlsx") && parent.equals("data"))) {
+                    out.add(f);
+                }
+            } else if (f.isDirectory()) {
+                String n = f.getName().toLowerCase();
+                if (n.equals("target") || n.equals("node_modules") || n.equals(".git")
+                        || n.equals(".idea") || n.equals(".vscode") || n.startsWith(".venv")) continue;
+                recolectarArchivosCredenciales(f, out);
+            }
+        }
+    }
+
+    /** Menor número = mayor prioridad al elegir el archivo de credenciales. */
+    private static int prioridadArchivo(File f) {
+        String p = f.getAbsolutePath().replace('/', '\\').toLowerCase();
+        String n = f.getName().toLowerCase();
+        if (n.equals("principal.json") && p.contains("src\\main\\resources\\testdata")) return 0;
+        if (n.equals("principal.json")) return 1;
+        if (n.equals("csvbciseguros.csv") && p.contains("\\data\\")) return 2;
+        if (n.equals("csvbciseguros.csv")) return 3;
+        if (n.equals("unitario.xlsx") || n.equals("datapool.xlsx")) return 4;
+        if (n.equals("config.json")) return 5;
+        if (n.endsWith(".json")) return 6;
+        if (n.endsWith(".xlsx")) return 7;
+        return 8;
+    }
+
+    /**
+     * Indica si el proyecto tiene un archivo de credenciales con campos
+     * de login editables (user/pasword/clave/rut/usuario).
+     */
+    public static boolean proyectoTieneCredenciales(ProyectoAutomatizacion proyecto) {
+        File archivo = encontrarArchivoCredenciales(proyecto);
+        if (archivo == null) return false;
+        try {
+            return !leerCamposCredenciales(archivo).isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Lee los campos de credenciales editables del archivo del proyecto.
+     * JSON: claves que contengan user/usuario/pasword/contrasen/clave, más
+     * claves rut* dentro de objetos que ya tengan alguna credencial.
+     * CSV: columnas del encabezado con esos mismos patrones (fila 2 editable).
+     */
+    public static List<CampoCredencial> leerCamposCredenciales(File archivo) throws IOException {
+        List<CampoCredencial> campos = new ArrayList<>();
+        String nombre = archivo.getName().toLowerCase();
+        if (nombre.endsWith(".json")) {
+            String texto = new String(Files.readAllBytes(archivo.toPath()), StandardCharsets.UTF_8);
+            int fin = finPrimerObjetoJson(texto);
+            String cuerpo = fin > 0 ? texto.substring(texto.indexOf('{'), fin) : texto;
+            JsonObject json = JsonParser.parseString(cuerpo).getAsJsonObject();
+            recolectarCamposJson(json, "", campos);
+        } else if (nombre.endsWith(".xlsx")) {
+            try (java.io.FileInputStream in = new java.io.FileInputStream(archivo);
+                 org.apache.poi.ss.usermodel.Workbook wb = new org.apache.poi.xssf.usermodel.XSSFWorkbook(in)) {
+                org.apache.poi.ss.usermodel.Sheet sh = wb.getSheetAt(0);
+                org.apache.poi.ss.usermodel.Row header = sh != null ? sh.getRow(0) : null;
+                org.apache.poi.ss.usermodel.Row fila = sh != null ? sh.getRow(1) : null;
+                if (header == null || fila == null) return campos;
+                int cols = header.getLastCellNum();
+                boolean hayCred = false;
+                for (int i = 0; i < cols; i++) {
+                    if (CLAVE_CRED.matcher(textoCelda(header.getCell(i))).matches()) { hayCred = true; break; }
+                }
+                if (!hayCred) return campos;
+                for (int i = 0; i < cols; i++) {
+                    String h = textoCelda(header.getCell(i));
+                    if (CLAVE_CRED.matcher(h).matches() || CLAVE_RUT.matcher(h).matches()) {
+                        campos.add(new CampoCredencial("0:" + i, h, textoCelda(fila.getCell(i)),
+                            CLAVE_PASS.matcher(h).matches()));
+                    }
+                }
+            } catch (IOException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException("Error leyendo xlsx", e);
+            }
+        } else {
+            List<String> lineas = Files.readAllLines(archivo.toPath());
+            if (lineas.size() >= 2) {
+                String[] headers = lineas.get(0).split(",", -1);
+                String[] fila = lineas.get(1).split(",", -1);
+                // El CSV cuenta como credenciales solo si tiene al menos una
+                // columna user/usuario/pasword/contrasenha/clave; las columnas
+                // rut* se agregan solo si ya existe una credencial real (un
+                // "rut" solo suele ser dato del caso, no login).
+                boolean hayCred = false;
+                for (String h : headers) {
+                    if (CLAVE_CRED.matcher(h.trim()).matches()) { hayCred = true; break; }
+                }
+                if (hayCred) {
+                    for (int i = 0; i < headers.length; i++) {
+                        String h = headers[i].trim();
+                        if (CLAVE_CRED.matcher(h).matches() || CLAVE_RUT.matcher(h).matches()) {
+                            String valor = i < fila.length ? fila[i].trim() : "";
+                            campos.add(new CampoCredencial(String.valueOf(i), h, valor,
+                                CLAVE_PASS.matcher(h).matches()));
+                        }
+                    }
+                }
+            }
+        }
+        return campos;
+    }
+
+    private static void recolectarCamposJson(JsonObject obj, String path, List<CampoCredencial> out) {
+        boolean objTieneCred = obj.keySet().stream().anyMatch(k -> CLAVE_CRED.matcher(k).matches());
+        for (Map.Entry<String, JsonElement> e : obj.entrySet()) {
+            String key = e.getKey();
+            String ruta = path.isEmpty() ? key : path + "." + key;
+            if (e.getValue().isJsonObject()) {
+                recolectarCamposJson(e.getValue().getAsJsonObject(), ruta, out);
+            } else if (CLAVE_CRED.matcher(key).matches()
+                    || (objTieneCred && CLAVE_RUT.matcher(key).matches())) {
+                out.add(new CampoCredencial(ruta, etiquetaCampo(key, path),
+                    e.getValue().isJsonPrimitive() ? e.getValue().getAsString() : "",
+                    CLAVE_PASS.matcher(key).matches()));
+            }
+        }
+    }
+
+    private static String etiquetaCampo(String key, String path) {
+        String friendly;
+        String k = key.toLowerCase();
+        if (k.equals("user") || k.equals("usuario")) friendly = "Usuario";
+        else if (k.equals("user2") || k.equals("usuario2")) friendly = "Usuario 2";
+        else if (k.equals("pasword") || k.equals("contrasena") || k.equals("clave")) friendly = "Contraseña";
+        else if (k.equals("pasword2") || k.equals("contrasena2") || k.equals("clave2")) friendly = "Contraseña 2";
+        else if (k.startsWith("rut")) friendly = "RUT";
+        else friendly = key;
+        return path.isEmpty() ? friendly : friendly + " (" + path + ")";
+    }
+
+    /**
+     * Guarda los campos editados: JSON por ruta (datos1.user), CSV por índice
+     * de columna en la fila 2.
+     */
+    public static void guardarCamposCredenciales(File archivo, List<CampoCredencial> campos) throws IOException {
+        String nombre = archivo.getName().toLowerCase();
+        if (nombre.endsWith(".json")) {
+            // Leer solo el primer objeto JSON y preservar cualquier texto
+            // posterior (algunos testdata traen un segundo documento anexado).
+            String texto = new String(Files.readAllBytes(archivo.toPath()), StandardCharsets.UTF_8);
+            int fin = finPrimerObjetoJson(texto);
+            JsonObject json;
+            String cola = "";
+            if (fin > 0) {
+                json = JsonParser.parseString(texto.substring(texto.indexOf('{'), fin)).getAsJsonObject();
+                cola = texto.substring(fin);
+            } else {
+                json = JsonParser.parseString(texto).getAsJsonObject();
+            }
+            for (CampoCredencial c : campos) {
+                String[] partes = c.clave.split("\\.");
+                JsonObject padre = json;
+                boolean ok = true;
+                for (int i = 0; i < partes.length - 1; i++) {
+                    if (padre.has(partes[i]) && padre.get(partes[i]).isJsonObject()) {
+                        padre = padre.getAsJsonObject(partes[i]);
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok && padre.has(partes[partes.length - 1])) {
+                    padre.addProperty(partes[partes.length - 1], c.valor);
+                }
+            }
+            Files.write(archivo.toPath(), (gson.toJson(json) + cola).getBytes(StandardCharsets.UTF_8));
+        } else if (nombre.endsWith(".xlsx")) {
+            try (java.io.FileInputStream in = new java.io.FileInputStream(archivo);
+                 org.apache.poi.ss.usermodel.Workbook wb = new org.apache.poi.xssf.usermodel.XSSFWorkbook(in)) {
+                for (CampoCredencial c : campos) {
+                    String[] partes = c.clave.split(":");
+                    int hoja = Integer.parseInt(partes[0]);
+                    int col = Integer.parseInt(partes[1]);
+                    org.apache.poi.ss.usermodel.Sheet sh = wb.getSheetAt(hoja);
+                    org.apache.poi.ss.usermodel.Row fila = sh.getRow(1);
+                    if (fila == null) fila = sh.createRow(1);
+                    org.apache.poi.ss.usermodel.Cell cell = fila.getCell(col);
+                    if (cell == null) cell = fila.createCell(col);
+                    // Preservar tipo numérico cuando el valor sigue siendo número
+                    if (cell.getCellType() == org.apache.poi.ss.usermodel.CellType.NUMERIC
+                            && c.valor != null && c.valor.matches("-?\\d+(\\.\\d+)?")) {
+                        cell.setCellValue(Double.parseDouble(c.valor));
+                    } else {
+                        cell.setCellValue(c.valor == null ? "" : c.valor);
+                    }
+                }
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(archivo)) {
+                    wb.write(out);
+                }
+            } catch (IOException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException("Error guardando xlsx", e);
+            }
+        } else {
+            List<String> lineas = Files.readAllLines(archivo.toPath());
+            if (lineas.size() < 2) return;
+            String[] fila = lineas.get(1).split(",", -1);
+            for (CampoCredencial c : campos) {
+                int idx = Integer.parseInt(c.clave);
+                if (idx < fila.length) {
+                    fila[idx] = c.valor;
+                }
+            }
+            lineas.set(1, String.join(",", fila));
+            Files.write(archivo.toPath(), lineas, StandardCharsets.UTF_8);
+        }
+    }
+
+    /** Índice justo después del primer objeto JSON balanceado, o -1. */
+    private static int finPrimerObjetoJson(String texto) {
+        int inicio = texto.indexOf('{');
+        if (inicio < 0) return -1;
+        int profundidad = 0;
+        boolean enStr = false, esc = false;
+        for (int i = inicio; i < texto.length(); i++) {
+            char c = texto.charAt(i);
+            if (enStr) {
+                if (esc) esc = false;
+                else if (c == '\\') esc = true;
+                else if (c == '"') enStr = false;
+            } else {
+                if (c == '"') enStr = true;
+                else if (c == '{') profundidad++;
+                else if (c == '}' && --profundidad == 0) return i + 1;
+            }
+        }
+        return -1;
+    }
+
+    /** Texto de una celda Excel (números enteros sin decimales). */
+    private static String textoCelda(org.apache.poi.ss.usermodel.Cell cell) {
+        if (cell == null) return "";
+        switch (cell.getCellType()) {
+            case NUMERIC:
+                double d = cell.getNumericCellValue();
+                return d == Math.floor(d) && !Double.isInfinite(d)
+                        ? String.valueOf((long) d) : String.valueOf(d);
+            case BOOLEAN: return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA: return cell.getCellFormula();
+            default: return cell.getStringCellValue().trim();
         }
     }
 }

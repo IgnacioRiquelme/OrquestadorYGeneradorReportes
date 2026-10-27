@@ -9,8 +9,8 @@ $ErrorActionPreference = 'Stop'
 $ROOT         = $PSScriptRoot
 $TARGET       = "$ROOT\target"
 $DIST         = "C:\orq_dist"
-$JAR          = "orquestador-automatizaciones-1.0-SNAPSHOT-all.jar"
-$ICON         = "$ROOT\assets\bci_seguros.ico"
+$JAR          = "orquestador-automatizaciones-1.1.0-all.jar"
+$ICON         = "$ROOT\assets\irc_solutions.ico"
 $ISCC         = @("C:\Program Files (x86)\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $ISCC) { throw "No se encontro Inno Setup 6 (ISCC.exe)." }
 $JDK_HOME_BUILD = if ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\jmods")) { $env:JAVA_HOME } else { 'C:\Program Files\Java\jdk-21' }

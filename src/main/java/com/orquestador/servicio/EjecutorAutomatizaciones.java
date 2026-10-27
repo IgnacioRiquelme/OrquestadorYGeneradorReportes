@@ -6,6 +6,9 @@ import com.orquestador.modelo.ProyectoAutomatizacion.EstadoEjecucion;
 import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -45,8 +48,8 @@ public class EjecutorAutomatizaciones {
                 // Limpiar procesos antes de ejecutar
                 limpiarProcesos(logCallback);
 
-                // PASO 1: Limpiar imágenes de la carpeta de capturas antes de ejecutar
-                limpiarImagenesAnteriores(proyecto, logCallback);
+                // PASO 1: Archivar imágenes de la carpeta de capturas antes de ejecutar
+                archivarImagenesAnteriores(proyecto, logCallback);
 
                 // Resolver el directorio real de ejecución (soporta proyectos
                 // con el código anidado en una subcarpeta, ej: .../auxilia)
@@ -298,27 +301,41 @@ public class EjecutorAutomatizaciones {
 
                 File dirEjecucion = resolverDirectorioEjecucion(proyecto);
                 String baseDir = dirEjecucion != null ? dirEjecucion.getAbsolutePath() : proyecto.getRuta();
-                File surefireReportsDir = new File(baseDir + File.separator + "test-output" + File.separator + "surefire-reports");
-                if (surefireReportsDir.exists()) {
-                    logContent.append("REPORTES DE MAVEN (Surefire):\n");
-                    logContent.append("========================================\n");
 
-                    // Buscar archivos .txt en surefire-reports
+                // Surefire queda en target/surefire-reports (Maven) y a veces en
+                // test-output/surefire-reports (TestNG). Los .txt traen el
+                // stacktrace real del fallo — son la info relevante del log.
+                for (String sub : new String[]{"target" + File.separator + "surefire-reports",
+                                               "test-output" + File.separator + "surefire-reports"}) {
+                    File surefireReportsDir = new File(baseDir, sub);
+                    if (!surefireReportsDir.exists()) continue;
                     File[] reportFiles = surefireReportsDir.listFiles((dir, name) -> name.endsWith(".txt"));
-                    if (reportFiles != null && reportFiles.length > 0) {
-                        for (File reportFile : reportFiles) {
-                            logContent.append("\n--- ").append(reportFile.getName()).append(" ---\n");
-                            try {
-                                String content = new String(java.nio.file.Files.readAllBytes(reportFile.toPath()), "UTF-8");
-                                logContent.append(content).append("\n");
-                            } catch (Exception e) {
-                                logContent.append("Error leyendo reporte: ").append(e.getMessage()).append("\n");
+                    if (reportFiles == null || reportFiles.length == 0) continue;
+                    logContent.append("REPORTES DE MAVEN (").append(sub).append("):\n");
+                    logContent.append("========================================\n");
+                    java.util.Arrays.sort(reportFiles,
+                        java.util.Comparator.comparingLong(File::lastModified).reversed());
+                    for (File reportFile : reportFiles) {
+                        logContent.append("\n--- ").append(reportFile.getName()).append(" ---\n");
+                        try {
+                            String content = new String(java.nio.file.Files.readAllBytes(reportFile.toPath()), "UTF-8");
+                            if (content.length() > 200_000) {
+                                content = content.substring(0, 200_000) + "\n... [truncado]";
                             }
+                            logContent.append(content).append("\n");
+                        } catch (Exception e) {
+                            logContent.append("Error leyendo reporte: ").append(e.getMessage()).append("\n");
                         }
-                    } else {
-                        logContent.append("No se encontraron reportes .txt\n");
                     }
                     logContent.append("\n");
+                }
+
+                // Reporte más reciente (ExtentReports / ReporteAutomatizacion / surefire)
+                File ultimoReporte = buscarUltimoReporte(proyecto);
+                if (ultimoReporte != null) {
+                    logContent.append("REPORTE MAS RECIENTE EN EL PROYECTO:\n");
+                    logContent.append("========================================\n");
+                    logContent.append(ultimoReporte.getAbsolutePath()).append("\n\n");
                 }
 
                 // Buscar archivos .log adicionales en test-output
@@ -354,10 +371,14 @@ public class EjecutorAutomatizaciones {
     }
 
     /**
-     * Limpia todas las imágenes de la carpeta de capturas antes de ejecutar la automatización
-     * Esto asegura que solo estén las imágenes de la ejecución actual
+     * Archiva las imágenes de la carpeta de capturas antes de ejecutar la automatización.
+     * En vez de borrarlas, las mueve a "<capturas>/../evidencias/<yyyyMMdd_HHmmss>/"
+     * donde el timestamp corresponde a la fecha/hora de la ejecución que las generó
+     * (última modificación de las imágenes). Así la carpeta de capturas queda vacía
+     * para la nueva ejecución y las evidencias quedan consultables.
+     * También purga las carpetas de evidencias con más de 30 días.
      */
-    private void limpiarImagenesAnteriores(ProyectoAutomatizacion proyecto, Consumer<String> logCallback) {
+    private void archivarImagenesAnteriores(ProyectoAutomatizacion proyecto, Consumer<String> logCallback) {
         try {
             // Usar la ruta de imágenes configurada si existe, sino usar ruta por defecto
             String rutaCapturas = proyecto.getRutaImagenes();
@@ -380,42 +401,140 @@ public class EjecutorAutomatizaciones {
                 logCallback.accept("  ⚠ No se pudo determinar carpeta de capturas");
                 return;
             }
-            
+
             File carpetaCapturas = new File(rutaCapturas);
-            
-            // Si no existe la carpeta, no hay nada que limpiar
+            // La carpeta histórica vive en la raíz de cada proyecto con nombre
+            // "Historial Evidencias": nunca dentro ni junto a la carpeta de
+            // capturas (que podría llamarse "evidencias"), así no se mezclan
+            // los archivos archivados con los de la ejecución actual
+            String rutaProyecto = proyecto.getRuta();
+            if (rutaProyecto == null || rutaProyecto.trim().isEmpty()) {
+                logCallback.accept("  ⚠ Proyecto sin ruta, se eliminarán las imágenes anteriores");
+                File[] imgs = carpetaCapturas.listFiles((d, n) ->
+                    n.toLowerCase().endsWith(".png") || n.toLowerCase().endsWith(".jpg") || n.toLowerCase().endsWith(".jpeg"));
+                if (imgs != null) for (File img : imgs) img.delete();
+                return;
+            }
+            File carpetaEvidencias = new File(rutaProyecto, "Historial Evidencias");
+
+            // Purga: eliminar carpetas de evidencias con más de 30 días
+            purgarEvidenciasAntiguas(carpetaEvidencias, logCallback);
+
+            // Si no existe la carpeta, no hay nada que archivar
             if (!carpetaCapturas.exists() || !carpetaCapturas.isDirectory()) {
                 logCallback.accept("  ℹ Carpeta de capturas no existe (se creará en la ejecución)");
                 return;
             }
-            
+
             // Listar todas las imágenes
-            File[] imagenes = carpetaCapturas.listFiles((dir, name) -> 
-                name.toLowerCase().endsWith(".png") || 
-                name.toLowerCase().endsWith(".jpg") || 
+            File[] imagenes = carpetaCapturas.listFiles((dir, name) ->
+                name.toLowerCase().endsWith(".png") ||
+                name.toLowerCase().endsWith(".jpg") ||
                 name.toLowerCase().endsWith(".jpeg")
             );
-            
+
             if (imagenes == null || imagenes.length == 0) {
-                logCallback.accept("  ℹ No hay imágenes anteriores para limpiar");
+                logCallback.accept("  ℹ No hay imágenes anteriores para archivar");
                 return;
             }
-            
-            // Eliminar todas las imágenes
-            int eliminadas = 0;
+
+            // Timestamp = fecha/hora de la ejecución que generó las capturas
+            long fechaEjecucion = 0;
             for (File imagen : imagenes) {
-                if (imagen.delete()) {
+                fechaEjecucion = Math.max(fechaEjecucion, imagen.lastModified());
+            }
+            if (fechaEjecucion <= 0) fechaEjecucion = System.currentTimeMillis();
+            String stamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss")
+                    .format(new java.util.Date(fechaEjecucion));
+
+            File destino = new File(carpetaEvidencias, stamp);
+            int sufijo = 1;
+            while (destino.exists()) {
+                destino = new File(carpetaEvidencias, stamp + "_" + (sufijo++));
+            }
+            if (!destino.mkdirs()) {
+                logCallback.accept("  ⚠ No se pudo crear carpeta de evidencias, se eliminarán las imágenes");
+                for (File imagen : imagenes) imagen.delete();
+                return;
+            }
+
+            // Mover todas las imágenes a la carpeta de evidencias
+            int archivadas = 0;
+            for (File imagen : imagenes) {
+                File dest = new File(destino, imagen.getName());
+                if (imagen.renameTo(dest)) {
+                    archivadas++;
+                } else {
+                    // Si no se puede mover (ej. otro volumen), copiar y borrar
+                    try {
+                        java.nio.file.Files.copy(imagen.toPath(), dest.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        if (imagen.delete()) archivadas++;
+                    } catch (Exception ex) {
+                        // Último recurso: borrar para no mezclar con la nueva ejecución
+                        imagen.delete();
+                    }
+                }
+            }
+
+            logCallback.accept("  � Archivadas " + archivadas + " imágenes en: Historial Evidencias" + File.separator + destino.getName());
+
+        } catch (Exception e) {
+            logCallback.accept("  ⚠ Error al archivar imágenes anteriores: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Elimina las carpetas de evidencias con más de 30 días.
+     * Solo purga carpetas cuyo nombre empiece con el formato yyyyMMdd_HHmmss
+     * (las generadas por el orquestador); el resto se deja intacto.
+     */
+    private void purgarEvidenciasAntiguas(File carpetaEvidencias, Consumer<String> logCallback) {
+        try {
+            if (carpetaEvidencias == null || !carpetaEvidencias.isDirectory()) return;
+            File[] carpetas = carpetaEvidencias.listFiles(File::isDirectory);
+            if (carpetas == null || carpetas.length == 0) return;
+
+            long limite = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000;
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
+            sdf.setLenient(false);
+
+            int eliminadas = 0;
+            for (File carpeta : carpetas) {
+                String nombre = carpeta.getName();
+                if (nombre.length() < 15) continue;
+                long fechaCarpeta;
+                try {
+                    fechaCarpeta = sdf.parse(nombre.substring(0, 15)).getTime();
+                } catch (Exception ex) {
+                    continue; // No es una carpeta de evidencias generada por nosotros
+                }
+                if (fechaCarpeta < limite && borrarDirectorioRecursivo(carpeta)) {
                     eliminadas++;
                 }
             }
-            
-            logCallback.accept("  🗑️ Limpiadas " + eliminadas + " imágenes anteriores de: " + carpetaCapturas.getName());
-            
+            if (eliminadas > 0) {
+                logCallback.accept("  🗑️ Purgadas " + eliminadas + " carpeta(s) de evidencias con más de 30 días");
+            }
         } catch (Exception e) {
-            logCallback.accept("  ⚠ Error al limpiar imágenes anteriores: " + e.getMessage());
+            logCallback.accept("  ⚠ Error al purgar evidencias antiguas: " + e.getMessage());
         }
     }
-    
+
+    private boolean borrarDirectorioRecursivo(File dir) {
+        File[] contenido = dir.listFiles();
+        if (contenido != null) {
+            for (File f : contenido) {
+                if (f.isDirectory()) {
+                    borrarDirectorioRecursivo(f);
+                } else {
+                    f.delete();
+                }
+            }
+        }
+        return dir.delete();
+    }
+
     /**
      * Detiene la ejecución actual
      */
@@ -484,5 +603,49 @@ public class EjecutorAutomatizaciones {
 
     public void setEjecutando(boolean ejecutando) {
         this.ejecutando = ejecutando;
+    }
+
+    /**
+     * Busca el reporte más reciente de la última ejecución dentro del árbol
+     * del proyecto: .txt/.log bajo surefire-reports y .html bajo carpetas de
+     * reportes (ExtentReports, reporte, reports). Devuelve el más reciente
+     * por fecha de modificación, o null si no hay ninguno.
+     */
+    public static File buscarUltimoReporte(ProyectoAutomatizacion proyecto) {
+        if (proyecto == null || proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
+            return null;
+        }
+        List<File> candidatos = new ArrayList<>();
+        recolectarReportes(new File(proyecto.getRuta()), candidatos, 0);
+        return candidatos.stream()
+                .max(Comparator.comparingLong(File::lastModified))
+                .orElse(null);
+    }
+
+    private static void recolectarReportes(File dir, List<File> out, int profundidad) {
+        if (dir == null || !dir.isDirectory() || profundidad > 12) return;
+        File[] hijos = dir.listFiles();
+        if (hijos == null) return;
+        for (File f : hijos) {
+            if (f.isFile()) {
+                String n = f.getName().toLowerCase();
+                File padre = f.getParentFile();
+                String carpeta = padre.getName().toLowerCase();
+                File abuelo = padre.getParentFile();
+                String carpetaAbuelo = abuelo != null ? abuelo.getName().toLowerCase() : "";
+                boolean surefire = carpeta.equals("surefire-reports")
+                        && (n.endsWith(".txt") || n.endsWith(".log"));
+                boolean htmlReporte = n.endsWith(".html")
+                        && (carpeta.contains("report") || carpetaAbuelo.contains("report"));
+                if (surefire || htmlReporte) {
+                    out.add(f);
+                }
+            } else {
+                String n = f.getName().toLowerCase();
+                if (n.equals(".git") || n.equals("node_modules")
+                        || n.equals("historial evidencias")) continue;
+                recolectarReportes(f, out, profundidad + 1);
+            }
+        }
     }
 }

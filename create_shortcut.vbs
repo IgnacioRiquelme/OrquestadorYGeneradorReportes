@@ -15,7 +15,7 @@ lnk.WorkingDirectory = WshShell.CurrentDirectory
 lnk.WindowStyle = 1
 lnk.Description = "Acceso directo para ejecutar OrquestadorYGeneradorReportes (sin consola)"
 ' Opcional: icono del proyecto si existe
-iconPath = WshShell.CurrentDirectory & "\\assets\\bci_seguros.ico.bak"
+iconPath = WshShell.CurrentDirectory & "\\assets\\irc_solutions.ico"
 If CreateObject("Scripting.FileSystemObject").FileExists(iconPath) Then
 	lnk.IconLocation = iconPath
 End If

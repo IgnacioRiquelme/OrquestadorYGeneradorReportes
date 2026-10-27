@@ -10,9 +10,9 @@ public class ProyectoAutomatizacion {
     private String empresa;
     private String ruta;
     private String area; // Clientes, Comercial, Integraciones, Siniestros
-    private TipoVPN tipoVPN; // SIN_VPN, VPN_BCI, VPN_CLIP
+    private TipoVPN tipoVPN; // SIN_VPN, VPN_BCI
     private TipoEjecucion tipoEjecucion; // MAVEN, NEWMAN
-    private boolean seleccionado;
+    private transient boolean seleccionado;
     private EstadoEjecucion estado;
     private LocalDateTime ultimaEjecucion;
     private Integer duracionSegundos;
@@ -27,6 +27,10 @@ public class ProyectoAutomatizacion {
     // Campo para marcar proyectos que requieren ayuda (Cloudflare)
     private boolean requiereAyuda = false;
 
+    // Notas libres del proyecto (p.ej. motivo de fallo para escalación);
+    // se muestran en el informe de ejecución
+    private String notas = "";
+
     // Campos para generación de informes
     private String rutaImagenes;
     private String rutaTemplateWord;
@@ -40,8 +44,7 @@ public class ProyectoAutomatizacion {
     public enum TipoVPN {
         SIN_VPN("Sin VPN"),
         HIBRIDO("Hibrido"),
-        VPN_BCI("VPN BCI"),
-        VPN_CLIP("VPN Clip");
+        VPN_BCI("VPN Cliente");
 
         private final String descripcion;
 
@@ -268,6 +271,14 @@ public class ProyectoAutomatizacion {
 
     public void setRutaLogEjecucion(String rutaLogEjecucion) {
         this.rutaLogEjecucion = rutaLogEjecucion;
+    }
+
+    public String getNotas() {
+        return notas != null ? notas : "";
+    }
+
+    public void setNotas(String notas) {
+        this.notas = notas;
     }
 
     public boolean isEsProyectoManual() {

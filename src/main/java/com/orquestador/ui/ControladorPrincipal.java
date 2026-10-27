@@ -86,6 +86,9 @@ public class ControladorPrincipal {
     
     // Variables para vista compacta y tiempo total de ejecución
     private boolean vistaCompacta = false;
+    // Miembros de la vista compacta: proyectos que la integran aunque se
+    // desmarquen los checkboxes (la vista solo se abandona con "Expandir Vista")
+    private final java.util.Set<String> miembrosVistaCompacta = new java.util.HashSet<>();
     private Button btnVistaCompacta;
     private long tiempoInicioEjecucion = 0;
     private long tiempoTotalAcumulado = 0;
@@ -93,6 +96,9 @@ public class ControladorPrincipal {
     // Variables para sistema de vistas guardadas
     private Button btnGuardarVista;
     private Menu menuVistasGuardadas;
+    // Caché de detección de archivos de credenciales por proyecto (evita
+    // escanear el disco en cada repintado de la tabla)
+    private final java.util.Map<ProyectoAutomatizacion, Boolean> cacheTieneCredenciales = new java.util.WeakHashMap<>();
 
     // Descripciones para ayuda rápida (hover prolongado)
     private java.util.Map<Button, String> descripcionBotones = new java.util.HashMap<>();
@@ -322,7 +328,7 @@ public class ControladorPrincipal {
         cboFiltroVPN = new ComboBox<>();
         cboFiltroVPN.setPromptText("Filtrar por VPN");
         cboFiltroVPN.setEditable(false);
-        cboFiltroVPN.getItems().addAll("Todas", "Sin VPN", "Hibrido", "Con VPN BCI", "Con VPN CLIP");
+        cboFiltroVPN.getItems().addAll("Todas", "Sin VPN", "Hibrido", "Con VPN Cliente");
         cboFiltroVPN.setValue("Todas");
         cboFiltroVPN.setOnAction(e -> aplicarFiltro());
         
@@ -568,8 +574,85 @@ public class ControladorPrincipal {
         menuVistasGuardadas = new Menu("📋 Vistas Guardadas");
         actualizarMenuVistasGuardadas();
 
-        menuBar.getMenus().addAll(menuArchivo, menuHerramientas, menuVistasGuardadas);
+        // ── Menú Acerca de: label clickeable que abre el diálogo directo ────
+        Menu menuAcercaDe = new Menu();
+        Label lblAcercaDe = new Label("ℹ Acerca de");
+        lblAcercaDe.setOnMouseClicked(e -> {
+            e.consume();
+            mostrarAcercaDe();
+        });
+        menuAcercaDe.setGraphic(lblAcercaDe);
+
+        menuBar.getMenus().addAll(menuArchivo, menuHerramientas, menuVistasGuardadas, menuAcercaDe);
         return menuBar;
+    }
+
+    private void mostrarAcercaDe() {
+        Stage stage = new Stage();
+        stage.initModality(javafx.stage.Modality.APPLICATION_MODAL);
+        stage.setTitle("Acerca de");
+        stage.setResizable(false);
+
+        VBox box = new VBox(8);
+        box.setAlignment(Pos.CENTER);
+        box.setPadding(new Insets(28, 40, 24, 40));
+        box.setStyle("-fx-background-color: #0B1B33;");
+
+        try {
+            java.io.InputStream logoStream = getClass().getResourceAsStream("/irc_solutions.png");
+            if (logoStream != null) {
+                javafx.scene.image.ImageView logo = new javafx.scene.image.ImageView(
+                    new javafx.scene.image.Image(logoStream));
+                logo.setFitWidth(150);
+                logo.setPreserveRatio(true);
+                box.getChildren().add(logo);
+            }
+        } catch (Exception ignored) {
+        }
+
+        Label lblApp = new Label("Orquestador de Automatizaciones");
+        lblApp.setStyle("-fx-text-fill: white; -fx-font-size: 20px; -fx-font-weight: bold;");
+
+        Label lblVersion = new Label("Versión 1.0");
+        lblVersion.setStyle("-fx-text-fill: #9FB3C8; -fx-font-size: 12px;");
+
+        javafx.scene.control.Separator sep = new javafx.scene.control.Separator();
+        sep.setMaxWidth(320);
+        sep.setStyle("-fx-background-color: #00CFFF;");
+
+        Label lblDevTitulo = new Label("Desarrollado por");
+        lblDevTitulo.setStyle("-fx-text-fill: #9FB3C8; -fx-font-size: 11px;");
+
+        Label lblDev = new Label("Ignacio Riquelme — IRC Solutions");
+        lblDev.setStyle("-fx-text-fill: white; -fx-font-size: 14px; -fx-font-weight: bold;");
+
+        Label lblTagline = new Label("Tecnología que trabaja por ti");
+        lblTagline.setStyle("-fx-text-fill: #00CFFF; -fx-font-size: 11px; -fx-font-style: italic;");
+
+        Label lblMail = new Label("✉  ignaciorici@gmail.com");
+        lblMail.setStyle("-fx-text-fill: #C7D4E2; -fx-font-size: 12px;");
+
+        Label lblFono = new Label("📞  +56 9 5300 4474");
+        lblFono.setStyle("-fx-text-fill: #C7D4E2; -fx-font-size: 12px;");
+
+        Label lblFecha = new Label("Desarrollo: Noviembre 2025");
+        lblFecha.setStyle("-fx-text-fill: #9FB3C8; -fx-font-size: 11px;");
+
+        Label lblCopy = new Label("© 2025-2026 IRC Solutions. Todos los derechos reservados.");
+        lblCopy.setStyle("-fx-text-fill: #6B7F96; -fx-font-size: 10px;");
+
+        Button btnCerrar = new Button("Cerrar");
+        btnCerrar.setStyle("-fx-background-color: #00A9CE; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 6 24 6 24;");
+        btnCerrar.setOnAction(e -> stage.close());
+
+        box.getChildren().addAll(lblApp, lblVersion, sep,
+            lblDevTitulo, lblDev, lblTagline,
+            new Label(""), lblMail, lblFono, lblFecha,
+            new Label(""), lblCopy, btnCerrar);
+
+        Scene scene = new Scene(box);
+        stage.setScene(scene);
+        stage.showAndWait();
     }
 
     // -----------------------------------------------------------------------
@@ -1042,7 +1125,9 @@ public class ControladorPrincipal {
         TableColumn<ProyectoAutomatizacion, String> colDuracion = new TableColumn<>("Duración");
         colDuracion.setCellValueFactory(cellData -> {
             if (cellData.getValue().getDuracionSegundos() != null) {
-                return new javafx.beans.property.SimpleStringProperty(cellData.getValue().getDuracionSegundos() + "s");
+                int totalSegundos = cellData.getValue().getDuracionSegundos();
+                return new javafx.beans.property.SimpleStringProperty(
+                    String.format("%02d:%02d", totalSegundos / 60, totalSegundos % 60));
             }
             return new javafx.beans.property.SimpleStringProperty("-");
         });
@@ -1076,8 +1161,11 @@ public class ControladorPrincipal {
                     setGraphic(null);
                 } else {
                     ProyectoAutomatizacion proyecto = getTableView().getItems().get(getIndex());
-                    // Mostrar botón solo si hay log de ejecución
-                    if (proyecto.getRutaLogEjecucion() != null && !proyecto.getRutaLogEjecucion().trim().isEmpty()) {
+                    // Botón visible si hay log de sesión o si el proyecto fue
+                    // ejecutado alguna vez (buscarUltimoReporte lo resuelve)
+                    boolean hayLog = proyecto.getRutaLogEjecucion() != null
+                            && !proyecto.getRutaLogEjecucion().trim().isEmpty();
+                    if (hayLog || proyecto.getUltimaEjecucion() != null) {
                         setGraphic(btnVerLog);
                     } else {
                         setGraphic(null);
@@ -1117,32 +1205,25 @@ public class ControladorPrincipal {
 
                     if (esManual) {
                         setGraphic(btnCargarImagenes);
-                    } else if (esProyectoWebLiquidacion(proyecto)) {
-                        // Proyecto 20: Web de Liquidación con CSV especial
-                        btnConfigurar.setText("📋 Configurar CSV");
-                        btnConfigurar.setTooltip(new Tooltip("Editar datos del CSV (RUT, Contraseña, Siniestros)"));
-                        btnConfigurar.setStyle("-fx-background-color: #FF6B6B; -fx-text-fill: white; -fx-font-weight: bold;");
-                        setGraphic(btnConfigurar);
-                    } else if (esProyectoMesaRepuestos(proyecto)) {
-                        // Proyecto 21: Mesa de Repuestos con búsqueda flexible de CSV
-                        btnConfigurar.setText("📋 Configurar CSV");
-                        btnConfigurar.setTooltip(new Tooltip("Editar datos del CSV (RUT, Contraseña)"));
-                        btnConfigurar.setStyle("-fx-background-color: #9C27B0; -fx-text-fill: white; -fx-font-weight: bold;");
-                        setGraphic(btnConfigurar);
-                    } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
-                        // Ajustar texto/icono del botón Config según el nombre del proyecto
-                        String nombreProyecto = proyecto.getNombre() != null ? proyecto.getNombre().toLowerCase() : "";
-                        // Para los proyectos de 'Contactenos' (BCI / Zenit / Corredores) mostramos un ícono más descriptivo
-                        if (esProyectoContactenos(proyecto)) {
+                    } else {
+                        // Todos los proyectos con archivo de credenciales
+                        // muestran el mismo botón "Credenciales"; el diálogo
+                        // que se abre se decide en abrirDialogoCredenciales
+                        boolean especial = com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto);
+                        boolean csvEspecial = esProyectoWebLiquidacion(proyecto) || esProyectoMesaRepuestos(proyecto);
+                        boolean generico = !especial && !csvEspecial
+                            && cacheTieneCredenciales.computeIfAbsent(proyecto,
+                                com.orquestador.util.GestorCredenciales::proyectoTieneCredenciales);
+
+                        if (especial || csvEspecial || generico) {
                             btnConfigurar.setText("🔐 Credenciales");
                             btnConfigurar.setTooltip(new Tooltip("Editar credenciales del proyecto"));
+                            String color = especial ? "#FF9800" : (csvEspecial ? "#9C27B0" : "#455A64");
+                            btnConfigurar.setStyle("-fx-background-color: " + color + "; -fx-text-fill: white; -fx-font-weight: bold;");
+                            setGraphic(btnConfigurar);
                         } else {
-                            btnConfigurar.setText("⚙️ Config");
-                            btnConfigurar.setTooltip(new Tooltip("Configurar proyecto"));
+                            setGraphic(null);
                         }
-                        setGraphic(btnConfigurar);
-                    } else {
-                        setGraphic(null);
                     }
                 }
             }
@@ -1158,6 +1239,12 @@ public class ControladorPrincipal {
 
         MenuItem menuVerCapturas = new MenuItem("Ver Capturas");
         menuVerCapturas.setOnAction(e -> mostrarCapturas());
+
+        MenuItem menuVerEvidencias = new MenuItem("Historial Evidencias");
+        menuVerEvidencias.setOnAction(e -> abrirCarpetaEvidencias());
+
+        MenuItem menuNotas = new MenuItem("📝 Notas");
+        menuNotas.setOnAction(e -> abrirDialogoNotas());
 
         MenuItem menuExplorar = new MenuItem("Explorar directorio");
         menuExplorar.setOnAction(e -> {
@@ -1182,7 +1269,7 @@ public class ControladorPrincipal {
             }
         });
 
-        contextMenu.getItems().addAll(menuEditar, menuVerCapturas, menuExplorar);
+        contextMenu.getItems().addAll(menuEditar, menuVerCapturas, menuVerEvidencias, menuNotas, menuExplorar);
         tablaProyectos.setContextMenu(contextMenu);
 
         container.getChildren().addAll(lblTabla, tablaProyectos);
@@ -1671,7 +1758,9 @@ public class ControladorPrincipal {
     }
     
     private void eliminarSeleccionados() {
-        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+        // Solo los proyectos visibles en la tabla (filtrados): evita eliminar
+        // seleccionados ocultos de otra empresa
+        List<ProyectoAutomatizacion> seleccionados = tablaProyectos.getItems().stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
             .collect(Collectors.toList());
         
@@ -2326,26 +2415,28 @@ public class ControladorPrincipal {
     // Detectar el área a partir de la ruta del proyecto
     private String detectarAreaDesdeRuta(String ruta) {
         if (ruta == null || ruta.isEmpty()) return null;
-        String marker = "Automatizaciones_V2";
-        // normalizar separadores
+        // Soporta los proyectos originales y los espejos (BCI Originales)
+        String[] markers = { "Automatizaciones_V2", "Automatizacion BCI Originales" };
         String normalized = ruta.replace('/', '\\');
-        int idx = normalized.indexOf(marker + "\\");
-        if (idx == -1) {
-            // si no tiene barra después, buscar solo el marcador
-            idx = normalized.indexOf(marker);
-            if (idx == -1) return null;
-            int start = idx + marker.length();
-            if (start >= normalized.length()) return null;
-            String rest = normalized.substring(start);
-            if (rest.startsWith("\\")) rest = rest.substring(1);
-            String[] parts = rest.split("[\\\\/]");
+        for (String marker : markers) {
+            int idx = normalized.indexOf(marker + "\\");
+            if (idx == -1) {
+                // si no tiene barra después, buscar solo el marcador
+                idx = normalized.indexOf(marker);
+                if (idx == -1) continue;
+                int start = idx + marker.length();
+                if (start >= normalized.length()) continue;
+                String rest = normalized.substring(start);
+                if (rest.startsWith("\\")) rest = rest.substring(1);
+                String[] parts = rest.split("[\\\\/]");
+                if (parts.length > 0) return parts[0];
+                continue;
+            }
+            String rest = normalized.substring(idx + marker.length() + 1);
+            if (rest.isEmpty()) continue;
+            String[] parts = rest.split("\\\\");
             if (parts.length > 0) return parts[0];
-            return null;
         }
-        String rest = normalized.substring(idx + marker.length() + 1);
-        if (rest.isEmpty()) return null;
-        String[] parts = rest.split("\\\\");
-        if (parts.length > 0) return parts[0];
         return null;
     }
 
@@ -2470,23 +2561,115 @@ public class ControladorPrincipal {
             abrirDialogoCSVWebLiquidacion(proyecto);
         } else if (esProyectoMesaRepuestos(proyecto)) {
             abrirDialogoCSVMesaRepuestos(proyecto);
-        } else {
+        } else if (com.orquestador.util.GestorCredenciales.esProyectoEspecial(proyecto)) {
             abrirDialogoCredencialesEspeciales(proyecto);
+        } else {
+            abrirDialogoCredencialesGenerico(proyecto);
         }
+    }
+
+    /**
+     * Editor genérico de credenciales para cualquier proyecto con login:
+     * detecta Principal.json o CSVBCISeguros.csv y muestra solo los campos
+     * de credencial (usuario/rut + contraseña/clave) de forma editable.
+     */
+    private void abrirDialogoCredencialesGenerico(ProyectoAutomatizacion proyecto) {
+        try {
+            java.io.File archivo = com.orquestador.util.GestorCredenciales.encontrarArchivoCredenciales(proyecto);
+            if (archivo == null || !archivo.isFile()) {
+                mostrarAlerta("Credenciales", "No se encontró archivo de credenciales en:\n" + proyecto.getRuta(), Alert.AlertType.WARNING);
+                return;
+            }
+
+            java.util.List<com.orquestador.util.GestorCredenciales.CampoCredencial> campos =
+                com.orquestador.util.GestorCredenciales.leerCamposCredenciales(archivo);
+
+            if (campos.isEmpty()) {
+                mostrarAlerta("Credenciales", "El archivo no contiene campos de usuario/contraseña:\n" + archivo.getAbsolutePath(), Alert.AlertType.INFORMATION);
+                return;
+            }
+
+            Dialog<Boolean> dialog = new Dialog<>();
+            dialog.setTitle("Credenciales - " + proyecto.getNombre());
+            dialog.setHeaderText("Editar credenciales de: " + proyecto.getNombre());
+
+            ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
+            dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+
+            VBox contenido = new VBox(10);
+            contenido.setPadding(new Insets(18));
+            contenido.setMinWidth(520);
+
+            Label lblArchivo = new Label("📁 " + archivo.getAbsolutePath());
+            lblArchivo.setStyle("-fx-font-size: 10px; -fx-text-fill: #666;");
+            lblArchivo.setWrapText(true);
+            contenido.getChildren().add(lblArchivo);
+            contenido.getChildren().add(new Separator());
+
+            java.util.List<TextField> textFields = new ArrayList<>();
+            for (com.orquestador.util.GestorCredenciales.CampoCredencial campo : campos) {
+                HBox fila = new HBox(10);
+                fila.setAlignment(Pos.CENTER_LEFT);
+                Label lbl = new Label(campo.etiqueta + ":");
+                lbl.setStyle("-fx-font-weight: bold; -fx-min-width: 220px;");
+                TextField txt = new TextField(campo.valor != null ? campo.valor : "");
+                txt.setStyle("-fx-padding: 6px;");
+                HBox.setHgrow(txt, Priority.ALWAYS);
+                textFields.add(txt);
+                fila.getChildren().addAll(lbl, txt);
+                contenido.getChildren().add(fila);
+            }
+
+            javafx.scene.control.ScrollPane scroll = new javafx.scene.control.ScrollPane(contenido);
+            scroll.setFitToWidth(true);
+            scroll.setPrefHeight(Math.min(400, 80 + campos.size() * 45));
+            dialog.getDialogPane().setContent(scroll);
+
+            dialog.setResultConverter(boton -> boton == btnGuardar ? Boolean.TRUE : null);
+
+            Optional<Boolean> resultado = dialog.showAndWait();
+            if (resultado.isPresent() && resultado.get()) {
+                for (int i = 0; i < campos.size(); i++) {
+                    campos.get(i).valor = textFields.get(i).getText().trim();
+                }
+                com.orquestador.util.GestorCredenciales.guardarCamposCredenciales(archivo, campos);
+                cacheTieneCredenciales.remove(proyecto);
+                agregarLog("✅ Credenciales actualizadas en: " + archivo.getAbsolutePath());
+                mostrarAlerta("Éxito", "Credenciales guardadas correctamente", Alert.AlertType.INFORMATION);
+            }
+        } catch (Exception e) {
+            agregarLog("❌ Error abriendo credenciales: " + e.getMessage());
+            mostrarAlerta("Error", "Error al abrir credenciales: " + e.getMessage(), Alert.AlertType.ERROR);
+        }
+    }
+
+    /**
+     * Busca un archivo dentro del proyecto empezando por su ruta configurada y
+     * subiendo por los directorios padre (máx. 6 niveles). Sirve tanto para los
+     * proyectos originales (Automatizaciones_V2, ruta = raíz del proyecto) como
+     * para los espejos (Automatizacion BCI Originales, ruta más anidada).
+     */
+    private java.io.File buscarCsvEnProyecto(ProyectoAutomatizacion proyecto, String nombreArchivo) {
+        if (proyecto == null || proyecto.getRuta() == null || proyecto.getRuta().trim().isEmpty()) {
+            return null;
+        }
+        // Buscar solo dentro del árbol del propio proyecto (las
+        // automatizaciones lo cargan relativo a su directorio de trabajo);
+        // subir a padres encontraría CSVs de proyectos hermanos.
+        java.io.File dir = new java.io.File(proyecto.getRuta());
+        return buscarArchivoCSVFlexible(dir, nombreArchivo);
     }
 
     // Diálogo para editar el CSV del proyecto 20 (Web de Liquidación)
     private void abrirDialogoCSVWebLiquidacion(ProyectoAutomatizacion proyecto) {
         try {
-            // Ruta base para buscar el archivo CSV - Búsqueda recursiva
-            String rutaBaseSearch = "C:\\Automatizaciones_V2\\Siniestros\\20- Web de Liquidación\\Archivos\\data";
-            
-            // Buscar el archivo CSVBCISeguros.csv de forma flexible
-            java.io.File archivoCSV = buscarArchivoCSVFlexible(new java.io.File(rutaBaseSearch), "CSVBCISeguros.csv");
+            // Buscar el archivo CSVBCISeguros.csv desde la ruta del proyecto
+            // (soporta proyectos espejo con estructura de carpetas distinta)
+            java.io.File archivoCSV = buscarCsvEnProyecto(proyecto, "CSVBCISeguros.csv");
 
             if (archivoCSV == null || !archivoCSV.exists()) {
-                mostrarAlerta("Error", "No se encontró el archivo CSVBCISeguros.csv en:\n" + rutaBaseSearch + 
-                             "\n\nVerifica que el archivo exista en las subcarpetas.", Alert.AlertType.ERROR);
+                mostrarAlerta("Error", "No se encontró el archivo CSVBCISeguros.csv en:\n" + proyecto.getRuta() +
+                             "\n\nVerifica que el archivo exista en las subcarpetas del proyecto.", Alert.AlertType.ERROR);
                 return;
             }
 
@@ -2637,15 +2820,13 @@ public class ControladorPrincipal {
     // Diálogo para editar el CSV del proyecto 21 (Mesa de Repuestos) - Búsqueda flexible
     private void abrirDialogoCSVMesaRepuestos(ProyectoAutomatizacion proyecto) {
         try {
-            // Ruta base para buscar el archivo CSV
-            String rutaBaseSearchs = "C:\\Automatizaciones_V2\\Siniestros\\21- Mesa de Repuestos\\Archivos\\data";
-            
-            // Buscar el archivo CSVBCISeguros.csv de forma flexible
-            java.io.File archivoCSV = buscarArchivoCSVFlexible(new java.io.File(rutaBaseSearchs), "CSVBCISeguros.csv");
+            // Buscar el archivo CSVBCISeguros.csv desde la ruta del proyecto
+            // (soporta proyectos espejo con estructura de carpetas distinta)
+            java.io.File archivoCSV = buscarCsvEnProyecto(proyecto, "CSVBCISeguros.csv");
 
             if (archivoCSV == null || !archivoCSV.exists()) {
-                mostrarAlerta("Error", "No se encontró el archivo CSVBCISeguros.csv en:\n" + rutaBaseSearchs + 
-                             "\n\nVerifica que el archivo exista en las subcarpetas.", Alert.AlertType.ERROR);
+                mostrarAlerta("Error", "No se encontró el archivo CSVBCISeguros.csv en:\n" + proyecto.getRuta() +
+                             "\n\nVerifica que el archivo exista en las subcarpetas del proyecto.", Alert.AlertType.ERROR);
                 return;
             }
 
@@ -2729,9 +2910,11 @@ public class ControladorPrincipal {
                 }
             }
 
-            // Buscar de forma recursiva en subcarpetas
+            // Buscar de forma recursiva en subcarpetas (omite copias compiladas)
             for (java.io.File archivo : archivos) {
                 if (archivo.isDirectory()) {
+                    String n = archivo.getName().toLowerCase();
+                    if (n.equals("target") || n.equals("node_modules") || n.equals(".git")) continue;
                     java.io.File encontrado = buscarArchivoCSVFlexible(archivo, nombreArchivo);
                     if (encontrado != null) {
                         return encontrado;
@@ -2828,7 +3011,7 @@ public class ControladorPrincipal {
                     usuarioActual = cred.getUser();
                 } else if (nombre.contains("corredores")) {
                     contrasenaActual = cred.getPasword2();
-                    usuarioActual = cred.getUser();
+                    usuarioActual = cred.getUser2();
                 } else {
                     contrasenaActual = cred.getPasword();
                     usuarioActual = cred.getUser();
@@ -2884,7 +3067,49 @@ public class ControladorPrincipal {
                         mostrarAlerta("Copiado", "Contraseña copiada al portapapeles", Alert.AlertType.INFORMATION);
                     });
                     hboxPass.getChildren().addAll(lblPass, txtPassDisplay, btnCopiarPass);
-                    
+
+                    // Corredores tiene dos pares de credenciales: agregar RUT y Contraseña OFV (datos1)
+                    HBox hboxRut = null;
+                    HBox hboxOfv = null;
+                    if (nombre.contains("corredores")) {
+                        final String rutFinal = cred.getUser();
+                        final String passOfvFinal = cred.getPasword();
+
+                        hboxRut = new HBox(8);
+                        hboxRut.setAlignment(Pos.CENTER_LEFT);
+                        Label lblRut = new Label("RUT:");
+                        lblRut.setStyle("-fx-font-weight: bold;");
+                        TextField txtRutDisplay = new TextField(rutFinal != null ? rutFinal : "");
+                        txtRutDisplay.setEditable(false);
+                        Button btnCopiarRut = new Button("📋 Copiar");
+                        btnCopiarRut.setStyle("-fx-padding: 5;");
+                        btnCopiarRut.setOnAction(e2 -> {
+                            javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+                            javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                            content.putString(rutFinal != null ? rutFinal : "");
+                            clipboard.setContent(content);
+                            mostrarAlerta("Copiado", "RUT copiado al portapapeles", Alert.AlertType.INFORMATION);
+                        });
+                        hboxRut.getChildren().addAll(lblRut, txtRutDisplay, btnCopiarRut);
+
+                        hboxOfv = new HBox(8);
+                        hboxOfv.setAlignment(Pos.CENTER_LEFT);
+                        Label lblOfv = new Label("Contraseña OFV:");
+                        lblOfv.setStyle("-fx-font-weight: bold;");
+                        TextField txtOfvDisplay = new TextField(passOfvFinal != null ? passOfvFinal : "");
+                        txtOfvDisplay.setEditable(false);
+                        Button btnCopiarOfv = new Button("📋 Copiar");
+                        btnCopiarOfv.setStyle("-fx-padding: 5;");
+                        btnCopiarOfv.setOnAction(e2 -> {
+                            javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+                            javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                            content.putString(passOfvFinal != null ? passOfvFinal : "");
+                            clipboard.setContent(content);
+                            mostrarAlerta("Copiado", "Contraseña OFV copiada al portapapeles", Alert.AlertType.INFORMATION);
+                        });
+                        hboxOfv.getChildren().addAll(lblOfv, txtOfvDisplay, btnCopiarOfv);
+                    }
+
                     // Botón para copiar ambos datos
                     Button btnCopiarTodo = new Button("📋 Copiar Todo (usuario:contraseña)");
                     btnCopiarTodo.setStyle("-fx-background-color: #4CAF50; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8;");
@@ -2898,7 +3123,11 @@ public class ControladorPrincipal {
                         mostrarAlerta("Copiado", "Datos copiados al portapapeles", Alert.AlertType.INFORMATION);
                     });
                     
-                    contenidoCred.getChildren().addAll(hboxUser, hboxPass, new Separator(), btnCopiarTodo);
+                    if (hboxRut != null && hboxOfv != null) {
+                        contenidoCred.getChildren().addAll(hboxRut, hboxOfv, hboxUser, hboxPass, new Separator(), btnCopiarTodo);
+                    } else {
+                        contenidoCred.getChildren().addAll(hboxUser, hboxPass, new Separator(), btnCopiarTodo);
+                    }
                     dialogoCred.getDialogPane().setContent(contenidoCred);
                     dialogoCred.getDialogPane().getButtonTypes().add(ButtonType.OK);
                     dialogoCred.showAndWait();
@@ -2931,19 +3160,27 @@ public class ControladorPrincipal {
                 vboxCred.getChildren().add(txtPassword);
 
             } else if (nombre.contains("corredores")) {
+                // datos1: RUT + Contraseña OFV
                 vboxCred.getChildren().add(new Label("RUT:"));
                 TextField txtRut = new TextField(cred.getUser() != null ? cred.getUser() : "");
                 campos.put("rut", txtRut);
                 vboxCred.getChildren().add(txtRut);
 
+                vboxCred.getChildren().add(new Label("Contraseña OFV:"));
+                PasswordField txtPasswordOfv = new PasswordField();
+                txtPasswordOfv.setText(cred.getPasword());
+                campos.put("passwordOfv", txtPasswordOfv);
+                vboxCred.getChildren().add(txtPasswordOfv);
+
+                // datos2: Usuario + Contraseña Sitio Gestión
                 vboxCred.getChildren().add(new Label("Usuario:"));
                 TextField txtUser2 = new TextField(cred.getUser2());
                 campos.put("user2", txtUser2);
                 vboxCred.getChildren().add(txtUser2);
 
-                vboxCred.getChildren().add(new Label("Contraseña:"));
+                vboxCred.getChildren().add(new Label("Contraseña Sitio Gestión:"));
                 PasswordField txtPassword2 = new PasswordField();
-                txtPassword2.setText(cred.getPasword());
+                txtPassword2.setText(cred.getPasword2());
                 campos.put("password2", txtPassword2);
                 vboxCred.getChildren().add(txtPassword2);
 
@@ -2975,13 +3212,15 @@ public class ControladorPrincipal {
                     } else if (nombre.contains("corredores")) {
                         // RUT va a datos1.user
                         if (campos.containsKey("rut")) credActualizada.setUser(((TextField) campos.get("rut")).getText());
+                        // Contraseña OFV va a datos1.pasword
+                        if (campos.containsKey("passwordOfv")) {
+                            credActualizada.setPasword(((PasswordField) campos.get("passwordOfv")).getText());
+                        }
                         // Usuario va a datos2.user2
                         if (campos.containsKey("user2")) credActualizada.setUser2(((TextField) campos.get("user2")).getText());
-                        // Contraseña va a datos1.pasword Y datos2.pasword2
+                        // Contraseña Sitio Gestión va a datos2.pasword2
                         if (campos.containsKey("password2")) {
-                            String password = ((PasswordField) campos.get("password2")).getText();
-                            credActualizada.setPasword(password);
-                            credActualizada.setPasword2(password);
+                            credActualizada.setPasword2(((PasswordField) campos.get("password2")).getText());
                         }
                     } else {
                         if (campos.containsKey("user")) credActualizada.setUser(((TextField) campos.get("user")).getText());
@@ -3091,9 +3330,6 @@ public class ControladorPrincipal {
 
         // Guardar la lista de proyectos en ejecución para poder cancelarlos después
         proyectosEnEjecucion = new ArrayList<>(listaProyectos);
-        
-        // Guardar los proyectos que se ejecutarán para desmarcarlos después
-        List<ProyectoAutomatizacion> proyectosAEjecutar = new ArrayList<>(listaProyectos);
 
         agregarLog("\n========================================");
         agregarLog(" INICIANDO EJECUCIÓN");
@@ -3171,13 +3407,6 @@ public class ControladorPrincipal {
 
                     agregarLog("========================================\n");
 
-                    // Desmarcar los checkboxes de los proyectos ejecutados
-                    for (ProyectoAutomatizacion proyecto : proyectosAEjecutar) {
-                        proyecto.setSeleccionado(false);
-                    }
-                    tablaProyectos.refresh();
-                    guardarProyectos();
-
                     finalizarEjecucion();
                 });
 
@@ -3214,7 +3443,7 @@ public class ControladorPrincipal {
     private List<TipoVPN> determinarOrdenVPN(Map<TipoVPN, List<ProyectoAutomatizacion>> grupos) {
         List<TipoVPN> orden = new ArrayList<>();
         
-        // Si VPN BCI tiene ms proyectos que Sin VPN, ejecutar primero
+        // Si VPN Cliente tiene mas proyectos que Sin VPN, ejecutar primero
         int sinVPN = grupos.get(TipoVPN.SIN_VPN).size();
         int hibrido = grupos.get(TipoVPN.HIBRIDO).size();
         int vpnBCI = grupos.get(TipoVPN.VPN_BCI).size();
@@ -3227,11 +3456,6 @@ public class ControladorPrincipal {
             if (sinVPN > 0) orden.add(TipoVPN.SIN_VPN);
             if (hibrido > 0) orden.add(TipoVPN.HIBRIDO);
             if (vpnBCI > 0) orden.add(TipoVPN.VPN_BCI);
-        }
-        
-        // VPN Clip siempre al final
-        if (grupos.get(TipoVPN.VPN_CLIP).size() > 0) {
-            orden.add(TipoVPN.VPN_CLIP);
         }
         
         return orden;
@@ -3531,28 +3755,64 @@ public class ControladorPrincipal {
     }
     
     private void abrirLogEjecucion(ProyectoAutomatizacion proyecto) {
-        if (proyecto.getRutaLogEjecucion() == null || proyecto.getRutaLogEjecucion().trim().isEmpty()) {
-            mostrarAlerta("Sin log", "No hay log de ejecución disponible para este proyecto", Alert.AlertType.INFORMATION);
+        // 1) Log consolidado de la sesión actual (si existe y sigue vivo)
+        java.io.File logFile = null;
+        if (proyecto.getRutaLogEjecucion() != null && !proyecto.getRutaLogEjecucion().trim().isEmpty()) {
+            java.io.File f = new java.io.File(proyecto.getRutaLogEjecucion());
+            if (f.exists()) logFile = f;
+        }
+
+        // 2) Fallback: reporte más reciente dentro del proyecto (surefire .txt
+        //    con stacktrace, ExtentReports o ReporteAutomatizacion .html)
+        if (logFile == null) {
+            logFile = com.orquestador.servicio.EjecutorAutomatizaciones.buscarUltimoReporte(proyecto);
+        }
+
+        if (logFile == null) {
+            mostrarAlerta("Sin log", "No se encontró log ni reporte de ejecución en el proyecto:\n"
+                    + proyecto.getRuta(), Alert.AlertType.INFORMATION);
             return;
         }
-        
-        java.io.File logFile = new java.io.File(proyecto.getRutaLogEjecucion());
-        
-        if (!logFile.exists()) {
-            mostrarAlerta("Log no encontrado", "El archivo de log no existe:\n" + proyecto.getRutaLogEjecucion(), Alert.AlertType.WARNING);
-            return;
-        }
-        
+
         try {
             // Abrir el archivo con el editor predeterminado del sistema
             java.awt.Desktop.getDesktop().open(logFile);
-            agregarLog("📄 Abriendo log de: " + proyecto.getNombre());
+            agregarLog("📄 Abriendo: " + logFile.getName() + " (" + proyecto.getNombre() + ")");
         } catch (Exception e) {
             mostrarAlerta("Error", "No se pudo abrir el archivo de log:\n" + e.getMessage(), Alert.AlertType.ERROR);
             agregarLog("❌ Error abriendo log: " + e.getMessage());
         }
     }
     
+    private void abrirDialogoNotas() {
+        ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
+        if (seleccionado == null) {
+            mostrarAlerta("Sin selección", "Selecciona un proyecto de la tabla primero", Alert.AlertType.WARNING);
+            return;
+        }
+
+        Dialog<String> dialog = new Dialog<>();
+        dialog.setTitle("📝 Notas - " + seleccionado.getNombre());
+        dialog.setHeaderText("Notas para escalación / revisión.\nSe incluyen en el Informe de Ejecución.");
+
+        ButtonType btnGuardar = new ButtonType("Guardar", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(btnGuardar, ButtonType.CANCEL);
+
+        TextArea txtNotas = new TextArea(seleccionado.getNotas());
+        txtNotas.setPromptText("Ej: Falla por cambio de credenciales OFV — escalar a soporte nivel 2");
+        txtNotas.setWrapText(true);
+        txtNotas.setPrefRowCount(8);
+        txtNotas.setPrefColumnCount(45);
+        dialog.getDialogPane().setContent(txtNotas);
+
+        dialog.setResultConverter(bt -> bt == btnGuardar ? txtNotas.getText() : null);
+        dialog.showAndWait().ifPresent(texto -> {
+            seleccionado.setNotas(texto.trim());
+            guardarProyectos();
+            agregarLog("📝 Notas actualizadas: " + seleccionado.getNombre());
+        });
+    }
+
     private void mostrarCapturas() {
         // Obtener el proyecto seleccionado en la tabla
         ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
@@ -3657,11 +3917,61 @@ public class ControladorPrincipal {
         stage.show();
     }
 
+    private void abrirCarpetaEvidencias() {
+        ProyectoAutomatizacion seleccionado = tablaProyectos.getSelectionModel().getSelectedItem();
+
+        if (seleccionado == null) {
+            mostrarAlerta("Sin selección", "Selecciona un proyecto de la tabla primero", Alert.AlertType.WARNING);
+            return;
+        }
+
+        // Misma resolución que el archivado: la carpeta "Historial Evidencias"
+        // vive en la raíz del proyecto
+        String rutaProyecto = seleccionado.getRuta();
+        if (rutaProyecto == null || rutaProyecto.trim().isEmpty()) {
+            mostrarAlerta("Sin evidencias", "El proyecto no tiene ruta configurada", Alert.AlertType.INFORMATION);
+            return;
+        }
+        java.io.File carpetaEvidencias = new java.io.File(rutaProyecto, "Historial Evidencias");
+
+        if (!carpetaEvidencias.isDirectory()) {
+            mostrarAlerta("Sin evidencias", "No se encontró la carpeta de evidencias en:\n" + carpetaEvidencias.getAbsolutePath(), Alert.AlertType.INFORMATION);
+            return;
+        }
+
+        try {
+            new ProcessBuilder("explorer.exe", carpetaEvidencias.getAbsolutePath()).start();
+
+            Clipboard clipboard = Clipboard.getSystemClipboard();
+            ClipboardContent content = new ClipboardContent();
+            content.putString(carpetaEvidencias.getAbsolutePath());
+            clipboard.setContent(content);
+
+            logArea.appendText("Abriendo evidencias en: " + carpetaEvidencias.getAbsolutePath() + " (ruta copiada al portapapeles)\n");
+        } catch (Exception ex) {
+            logArea.appendText("Error abriendo la carpeta de evidencias: " + ex.getMessage() + "\n");
+        }
+    }
+
     private void finalizarEjecucion() {
         ejecutando = false;
         cancelRequested = false;
         threadEjecucion = null; // Limpiar la referencia al thread
         proyectosEnEjecucion.clear(); // Limpiar la lista de proyectos en ejecución
+
+        // Al terminar una ejecución (completada, cancelada o con error) se
+        // desmarcan TODOS los proyectos: la próxima corrida solo debe incluir
+        // lo que el usuario seleccione explícitamente.
+        for (ProyectoAutomatizacion p : proyectos) {
+            p.setSeleccionado(false);
+        }
+        // La vista compacta se mantiene aunque queden desmarcados: sus
+        // miembros no dependen del checkbox y solo se abandona con
+        // "Expandir Vista"
+        tablaProyectos.refresh();
+        guardarProyectos();
+        guardarPreferencias();
+
         btnEjecutarSeleccionados.setDisable(false);
         btnCancelarEjecucion.setDisable(true);
         btnAgregar.setDisable(false);
@@ -3696,19 +4006,18 @@ public class ControladorPrincipal {
                     case "Hibrido":
                         vpnOk = p.getTipoVPN() == TipoVPN.HIBRIDO;
                         break;
-                    case "Con VPN BCI":
+                    case "Con VPN Cliente":
                         vpnOk = p.getTipoVPN() == TipoVPN.VPN_BCI;
                         break;
-                    case "Con VPN CLIP":
-                        vpnOk = p.getTipoVPN() == TipoVPN.VPN_CLIP;
-                        break;
+
                     default:
                         vpnOk = true;
                 }
             }
-            // Vista compacta: SOLO proyectos seleccionados de la empresa en filtro
+            // Vista compacta: miembros de la vista (persisten aunque se
+            // desmarquen) o proyectos actualmente seleccionados
             if (soloSeleccionados) {
-                seleccionOk = p.isSeleccionado();
+                seleccionOk = p.isSeleccionado() || miembrosVistaCompacta.contains(generarClaveProyecto(p));
             }
             return empresaOk && areaOk && vpnOk && seleccionOk;
         });
@@ -3866,7 +4175,9 @@ public class ControladorPrincipal {
     }
     
     private void generarInformes() {
-        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+        // Solo los proyectos visibles en la tabla (filtrados): evita generar
+        // informes de seleccionados ocultos de otra empresa
+        List<ProyectoAutomatizacion> seleccionados = tablaProyectos.getItems().stream()
             .filter(ProyectoAutomatizacion::isSeleccionado)
             .collect(Collectors.toList());
         
@@ -3923,6 +4234,7 @@ public class ControladorPrincipal {
                     proyecto.setRutaImagenes(rutaImgs);
                     
                     proyecto.setRutaTemplateWord(proyAuto.getRutaTemplateWord());
+                    proyecto.setRutaSalida(proyAuto.getRuta()); // fallback si la salida configurada no es usable
                     proyecto.setRutaSalidaWord(proyAuto.getRutaSalidaWord() != null ? proyAuto.getRutaSalidaWord() : proyAuto.getRuta());
                     proyecto.setRutaSalidaPdf(proyAuto.getRutaSalidaPdf() != null ? proyAuto.getRutaSalidaPdf() : proyAuto.getRuta());
                     
@@ -4132,10 +4444,16 @@ public class ControladorPrincipal {
                 dateStyle.cloneStyleFrom(dataStyle);
                 org.apache.poi.ss.usermodel.CreationHelper createHelper = workbook.getCreationHelper();
                 dateStyle.setDataFormat(createHelper.createDataFormat().getFormat("dd/mm/yyyy hh:mm"));
+
+                // Estilo de duración como tiempo de Excel (mm:ss) para que el
+                // Total pueda autosumarlas con la fórmula SUM
+                org.apache.poi.ss.usermodel.CellStyle timeStyle = workbook.createCellStyle();
+                timeStyle.cloneStyleFrom(dataStyle);
+                timeStyle.setDataFormat(createHelper.createDataFormat().getFormat("mm:ss"));
                 
                 // Crear fila de encabezados
                 org.apache.poi.ss.usermodel.Row headerRow = sheet.createRow(0);
-                String[] columnas = {"Nombre", "Área", "Retry", "Estado", "Última Ejecución", "Duración", "Responsable"};
+                String[] columnas = {"Nombre", "Área", "Retry", "Estado", "Última Ejecución", "Duración", "Responsable", "Notas"};
                 
                 for (int i = 0; i < columnas.length; i++) {
                     org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
@@ -4193,7 +4511,8 @@ public class ControladorPrincipal {
                     }
                     cell4.setCellStyle(dataStyle);
                     
-                    // Duración (formato mm:ss)
+                    // Duración (formato mm:ss como tiempo de Excel: valor
+                    // numérico en fracción de día, editable y sumable)
                     org.apache.poi.ss.usermodel.Cell cell5 = row.createCell(5);
                     String duracionFormato = "-";
                     if (proyecto.getDuracionSegundos() != null && proyecto.getDuracionSegundos() > 0) {
@@ -4201,23 +4520,29 @@ public class ControladorPrincipal {
                         int minutos = totalSegundos / 60;
                         int segundos = totalSegundos % 60;
                         duracionFormato = String.format("%02d:%02d", minutos, segundos);
+                        cell5.setCellValue(totalSegundos / 86400.0);
+                        cell5.setCellStyle(timeStyle);
+                    } else {
+                        cell5.setCellValue(duracionFormato);
+                        cell5.setCellStyle(dataStyle);
                     }
-                    cell5.setCellValue(duracionFormato);
-                    cell5.setCellStyle(dataStyle);
                     
-                    // Responsable (Ignacio Riquelme con la duración)
+                    // Responsable (Ignacio Riquelme con la duración). Fórmula
+                    // que referencia la celda Duración: si el usuario la edita
+                    // manualmente, el texto entre paréntesis se actualiza solo
                     org.apache.poi.ss.usermodel.Cell cell6 = row.createCell(6);
-                    cell6.setCellValue("Ignacio Riquelme (" + duracionFormato + ")");
+                    int filaExcel = row.getRowNum() + 1;
+                    cell6.setCellFormula("\"Ignacio Riquelme (\"&IF(ISNUMBER(F" + filaExcel
+                        + "),TEXT(F" + filaExcel + ",\"mm:ss\"),\"-\")&\")\"");
                     cell6.setCellStyle(dataStyle);
+
+                    // Notas libres (escalación/revisión)
+                    org.apache.poi.ss.usermodel.Cell cell7 = row.createCell(7);
+                    cell7.setCellValue(proyecto.getNotas());
+                    cell7.setCellStyle(dataStyle);
                 }
                 
                 // ── Fila de Tiempo Total de Ejecución ──────────────────────────
-                long totalSegundosTotal = 0;
-                for (ProyectoAutomatizacion p : proyectosOrdenados) {
-                    if (p.getDuracionSegundos() != null && p.getDuracionSegundos() > 0) {
-                        totalSegundosTotal += p.getDuracionSegundos();
-                    }
-                }
 
                 // Estilo encabezado de la fila total (fondo azul oscuro, negrita, blanco)
                 org.apache.poi.ss.usermodel.CellStyle totalLabelStyle = workbook.createCellStyle();
@@ -4245,16 +4570,18 @@ public class ControladorPrincipal {
                 }
                 sheet.addMergedRegion(new org.apache.poi.ss.util.CellRangeAddress(rowNum, rowNum, 0, 5));
 
-                // Celda 6: valor formateado en hh:mm:ss
-                long horas    = totalSegundosTotal / 3600;
-                long minutos  = (totalSegundosTotal % 3600) / 60;
-                long segundos = totalSegundosTotal % 60;
+                // Celda 6: autosuma de la columna Duración (F) como tiempo de
+                // Excel — si el usuario edita una duración manualmente, el
+                // total se recalcula solo. Formato [h]:mm:ss para soportar
+                // totales que superen las 24 horas.
+                org.apache.poi.ss.usermodel.CellStyle totalTimeStyle = workbook.createCellStyle();
+                totalTimeStyle.cloneStyleFrom(totalValueStyle);
+                totalTimeStyle.setDataFormat(createHelper.createDataFormat().getFormat("[h]:mm:ss"));
 
-                String tiempoTotalStr = String.format("%02d:%02d:%02d", horas, minutos, segundos);
-
+                int ultimaFilaDatos = Math.max(rowNum, 2);
                 org.apache.poi.ss.usermodel.Cell totalCell = totalRow.createCell(6);
-                totalCell.setCellValue(tiempoTotalStr);
-                totalCell.setCellStyle(totalValueStyle);
+                totalCell.setCellFormula("SUM(F2:F" + ultimaFilaDatos + ")");
+                totalCell.setCellStyle(totalTimeStyle);
                 // ────────────────────────────────────────────────────────────────
 
                 // Ajustar ancho de columnas
@@ -5200,8 +5527,9 @@ public class ControladorPrincipal {
      * Inicia o detiene la automatización programada de ejecuciones
      */
     private void automatizarEjecucion() {
-        // Recolectar proyectos seleccionados (checkbox en la tabla)
-        List<ProyectoAutomatizacion> seleccionados = proyectos.stream()
+        // Recolectar proyectos seleccionados visibles en la tabla (filtrados):
+        // evita programar seleccionados ocultos de otra empresa
+        List<ProyectoAutomatizacion> seleccionados = tablaProyectos.getItems().stream()
                 .filter(ProyectoAutomatizacion::isSeleccionado)
                 .collect(Collectors.toList());
 
@@ -6242,10 +6570,19 @@ public class ControladorPrincipal {
         vistaCompacta = activar;
 
         if (vistaCompacta) {
+            // Snapshot de miembros: los proyectos seleccionados al activar la
+            // vista (o al aplicar una vista guardada) quedan fijados en ella
+            miembrosVistaCompacta.clear();
+            for (ProyectoAutomatizacion p : proyectos) {
+                if (p.isSeleccionado()) {
+                    miembrosVistaCompacta.add(generarClaveProyecto(p));
+                }
+            }
             btnVistaCompacta.setStyle("-fx-background-color: #FF5722; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVistaCompacta.setText("📋 Expandir Vista");
             agregarLog("✓ Vista compacta ACTIVADA - Mostrando solo proyectos seleccionados de la empresa actual");
         } else {
+            miembrosVistaCompacta.clear();
             btnVistaCompacta.setStyle("-fx-background-color: #673AB7; -fx-text-fill: white; -fx-font-weight: bold;");
             btnVistaCompacta.setText("📦 Vista Compacta");
             agregarLog("✓ Vista compacta DESACTIVADA - Mostrando todos los proyectos");
@@ -6278,26 +6615,6 @@ public class ControladorPrincipal {
                 for (String s : parts) {
                     String t = s.trim();
                     if (!t.isEmpty()) proyectosDeshabilitados.add(t);
-                }
-            }
-            
-            // SEGUNDO: Cargar proyectos seleccionados ANTES de activar vista compacta
-            // La clave guardada es "empresa::nombre" para evitar mezcla entre empresas.
-            // Para compatibilidad con preferencias antiguas (solo nombre) se acepta también el formato viejo.
-            String seleccionados = props.getProperty("proyectosSeleccionados");
-            if (seleccionados != null && !seleccionados.trim().isEmpty()) {
-                String[] parts = seleccionados.split(";");
-                Set<String> clavesSeleccionadas = new java.util.HashSet<>();
-                for (String s : parts) {
-                    String t = s.trim();
-                    if (!t.isEmpty()) clavesSeleccionadas.add(t);
-                }
-                // Aplicar la selección a los proyectos cargados respetando la empresa
-                for (ProyectoAutomatizacion proyecto : proyectos) {
-                    String claveNueva  = (proyecto.getEmpresa() != null ? proyecto.getEmpresa() : "") + "::" + proyecto.getNombre();
-                    String claveVieja  = proyecto.getNombre(); // backward compat
-                    proyecto.setSeleccionado(clavesSeleccionadas.contains(claveNueva)
-                                          || clavesSeleccionadas.contains(claveVieja));
                 }
             }
             
@@ -6349,12 +6666,6 @@ public class ControladorPrincipal {
             // Guardar proyectos deshabilitados
             String joined = String.join(";;", proyectosDeshabilitados);
             props.setProperty("proyectosDeshabilitados", joined);
-            // Guardar proyectos seleccionados con clave "empresa::nombre" para evitar mezcla entre empresas
-            String seleccionados = proyectos.stream()
-                .filter(ProyectoAutomatizacion::isSeleccionado)
-                .map(p -> (p.getEmpresa() != null ? p.getEmpresa() : "") + "::" + p.getNombre())
-                .collect(Collectors.joining(";;"));
-            props.setProperty("proyectosSeleccionados", seleccionados);
             props.setProperty("empresasRegistradas", String.join(";;", empresasRegistradas));
             props.setProperty("empresaSeleccionada", cboFiltroEmpresa != null && cboFiltroEmpresa.getValue() != null
                 ? cboFiltroEmpresa.getValue() : EMPRESA_DEFAULT);

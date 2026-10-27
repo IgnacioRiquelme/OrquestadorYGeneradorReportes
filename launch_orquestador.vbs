@@ -1,4 +1,5 @@
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = "C:\Users\IARC\Desktop\OrquestadorYGeneradorReportes"
-WshShell.Run "cmd /c mvn javafx:run", 0, False
+strPath = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
+WshShell.CurrentDirectory = strPath
+WshShell.Run "ejecutar.bat", 0, False
 Set WshShell = Nothing

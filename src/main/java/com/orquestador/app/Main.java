@@ -58,7 +58,14 @@ public class Main extends Application {
 
             Scene scene = new Scene(controlador.getRoot(), initW, initH);
 
-            primaryStage.setTitle("Orquestador de Automatizaciones BCI Seguros");
+            primaryStage.setTitle("IRC Solutions - Orquestador");
+            try {
+                java.io.InputStream iconStream = Main.class.getResourceAsStream("/irc_solutions.png");
+                if (iconStream != null) {
+                    primaryStage.getIcons().add(new javafx.scene.image.Image(iconStream));
+                }
+            } catch (Exception ignored) {
+            }
             primaryStage.setScene(scene);
             primaryStage.setMinWidth(minW);
             primaryStage.setMinHeight(minH);

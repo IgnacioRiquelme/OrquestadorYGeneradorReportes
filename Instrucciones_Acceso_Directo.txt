@@ -1,0 +1,148 @@
+INSTRUCCIONES PARA LLEVAR LA APP A OTRA PC Y CREAR SU ACCESO DIRECTO
+================================================================================
+Ultima actualizacion: correspondiente a la version del proyecto con template
+Word universal, conversion a PDF por ruta absoluta de PowerShell, y scripts
+de lanzamiento con rutas relativas.
+
+
+1. COPIAR LA CARPETA DEL PROYECTO
+-----------------------------------
+Copia la carpeta COMPLETA del proyecto a la nueva PC. El nombre de la carpeta
+y la unidad pueden ser cualquiera, por ejemplo:
+
+    C:\MIs Respaldos\OrquestadorYGeneradorReportes
+    D:\Apps\OrquestadorYGeneradorReportes
+    C:\Users\TUUSUARIO\Desktop\OrquestadorYGeneradorReportes
+
+Dentro de la carpeta deben estar (entre otros):
+
+    - pom.xml
+    - src\ (codigo fuente completo)
+    - ejecutar.bat
+    - launch_hidden.vbs
+    - create_shortcut.vbs
+    - assets\bci_seguros.ico
+    - Esqueleto\ESQUELETO CON PLACEHOLDER.docx   <-- template Word universal
+
+
+2. REQUISITOS EN LA NUEVA PC (MUY IMPORTANTE)
+-----------------------------------------------
+La app se ejecuta con "mvn javafx:run", NO con un .jar precompilado.
+Por lo tanto, en la nueva PC debe estar instalado:
+
+    a) JDK 21 (Java Development Kit, no solo el JRE)
+    b) Apache Maven (probado con la version 3.9.11)
+    c) Microsoft Word (se usa para exportar los informes a PDF)
+
+Si "mvn" no queda agregado al PATH del sistema, edita "ejecutar.bat" y
+cambia esta linea con la ruta real donde instalaste Maven en la nueva PC:
+
+    if exist "C:\apache-maven-3.9.11\bin\mvn.cmd" (
+        set MVN_CMD=C:\apache-maven-3.9.11\bin\mvn.cmd
+    )
+
+
+3. RUTA DEL TEMPLATE WORD UNIVERSAL (MUY IMPORTANTE)
+-------------------------------------------------------
+Todos los informes se generan a partir de UN SOLO template Word universal.
+Su ruta esta escrita de forma fija (hardcodeada) en el codigo fuente, en:
+
+    src\main\java\com\orquestador\servicio\GeneradorDocumentos.java
+
+Busca esta linea (cerca del inicio del archivo):
+
+    private static String RUTA_TEMPLATE_GLOBAL =
+        "c:\\MIs Respaldos\\OrquestadorYGeneradorReportes\\Esqueleto\\ESQUELETO CON PLACEHOLDER.docx";
+
+Si en la nueva PC copiaste el proyecto en una ruta DIFERENTE a
+"C:\MIs Respaldos\OrquestadorYGeneradorReportes", DEBES actualizar esa
+ruta para que apunte a la carpeta "Esqueleto" dentro de la nueva ubicacion.
+Ejemplo, si copiaste el proyecto a D:\Apps\OrquestadorYGeneradorReportes:
+
+    private static String RUTA_TEMPLATE_GLOBAL =
+        "D:\\Apps\\OrquestadorYGeneradorReportes\\Esqueleto\\ESQUELETO CON PLACEHOLDER.docx";
+
+Despues de editar, vuelve a compilar/ejecutar (mvn se encarga de recompilar
+automaticamente la primera vez que abras la app).
+
+
+4. CREAR EL ACCESO DIRECTO AUTOMATICAMENTE (RECOMENDADO)
+-----------------------------------------------------------
+Dentro de la carpeta del proyecto existe el archivo:
+
+    create_shortcut.vbs
+
+Haz doble clic sobre el. Este script crea automaticamente en el Escritorio
+un acceso directo llamado "OrquestadorYGeneradorReportes.lnk", usando la
+carpeta donde esta ubicado el script como carpeta base (rutas relativas).
+No necesitas editar nada dentro de create_shortcut.vbs ni de los .vbs de
+lanzamiento: ya usan rutas relativas y funcionan sin importar donde copies
+la carpeta del proyecto.
+
+
+5. CREAR EL ACCESO DIRECTO MANUALMENTE (ALTERNATIVA)
+--------------------------------------------------------
+Si prefieres crearlo a mano:
+
+    a) Haz clic derecho en el Escritorio.
+    b) Selecciona "Nuevo" > "Acceso directo".
+    c) En "Ubicacion del elemento" escribe (ajusta la ruta a donde copiaste
+       el proyecto):
+
+       C:\Windows\System32\wscript.exe "RUTA_DEL_PROYECTO\launch_hidden.vbs"
+
+       Ejemplo:
+       C:\Windows\System32\wscript.exe "D:\Apps\OrquestadorYGeneradorReportes\launch_hidden.vbs"
+
+    d) Clic en "Siguiente", luego en "Finalizar".
+    e) Clic derecho sobre el acceso directo creado > "Propiedades".
+    f) En "Iniciar en" (carpeta de trabajo) escribe la ruta del proyecto:
+
+       D:\Apps\OrquestadorYGeneradorReportes
+
+    g) (Opcional) En "Cambiar icono" selecciona:
+
+       D:\Apps\OrquestadorYGeneradorReportes\assets\bci_seguros.ico
+
+
+6. COMO FUNCIONA EL ACCESO DIRECTO POR DENTRO
+-------------------------------------------------
+    Acceso directo
+      -> wscript.exe launch_hidden.vbs      (ventana totalmente oculta)
+      -> ejecutar.bat                       (busca mvn, corre "mvn javafx:run")
+      -> mvn javafx:run                     (compila si es necesario y abre la app)
+
+    Toda la salida de Maven se guarda en "app_run.log" dentro de la carpeta
+    del proyecto. Si algo falla, se abre automaticamente una ventana visible
+    mostrando el contenido de ese log para poder diagnosticar el problema.
+
+
+7. PRIMERA EJECUCION EN LA NUEVA PC
+---------------------------------------
+La primera vez que abras el acceso directo en la nueva PC, Maven descargara
+las dependencias necesarias (puede tardar varios minutos si hay internet
+lento). Las siguientes veces sera mucho mas rapido porque Maven cachea las
+dependencias en la carpeta ".m2" del usuario.
+
+
+8. VERIFICACION RAPIDA (CHECKLIST)
+---------------------------------------
+    [ ] JDK 21 instalado
+    [ ] Maven instalado (o ruta corregida en ejecutar.bat)
+    [ ] Microsoft Word instalado
+    [ ] Carpeta "Esqueleto\ESQUELETO CON PLACEHOLDER.docx" presente
+    [ ] RUTA_TEMPLATE_GLOBAL en GeneradorDocumentos.java apunta a la ruta
+        correcta de la nueva PC
+    [ ] Acceso directo creado con create_shortcut.vbs
+    [ ] Doble clic en el acceso directo abre la ventana
+        "Orquestador de Automatizaciones BCI Seguros"
+
+
+NOTAS
+-----
+    - Ya NO se configura un template Word individual por proyecto: todos
+      los informes usan el template universal de la carpeta "Esqueleto".
+    - Si el acceso directo no hace nada visible, revisa "app_run.log" en la
+      carpeta del proyecto: ahi queda el detalle de cualquier error.
+    - Si no existe el icono "assets\bci_seguros.ico", Windows usara el
+      icono por defecto, sin afectar el funcionamiento de la app.
